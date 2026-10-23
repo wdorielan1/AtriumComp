@@ -19,10 +19,15 @@ from .models import Job
 
 RUN_PREFIX = "__run__#"
 WATCH_PREFIX = "__watch__#"
+COMP_PREFIX = "__comp__#"
 
 
 def _watch_key(name: str) -> str:
     return WATCH_PREFIX + name.strip().lower()
+
+
+def _comp_key(name: str) -> str:
+    return COMP_PREFIX + name.strip().lower()
 
 
 def _to_dynamo(obj: Any) -> Any:
@@ -103,6 +108,16 @@ class DynamoStore:
     def delete_watch(self, name: str) -> None:
         self.table.delete_item(Key={"job_id": _watch_key(name)})
 
+    def competitors(self) -> list[dict]:
+        from boto3.dynamodb.conditions import Attr
+        return [_from_dynamo(i) for i in self._scan(FilterExpression=Attr("job_id").begins_with(COMP_PREFIX))]
+
+    def save_competitor(self, item: dict) -> None:
+        self.table.put_item(Item=_to_dynamo({**item, "job_id": _comp_key(item["name"])}))
+
+    def delete_competitor(self, name: str) -> None:
+        self.table.delete_item(Key={"job_id": _comp_key(name)})
+
 
 class FileStore:
     """Single JSON file; for local runs and tests."""
@@ -161,6 +176,19 @@ class FileStore:
     def delete_watch(self, name: str) -> None:
         with self._lock:
             self.data.pop(_watch_key(name), None)
+            self._flush()
+
+    def competitors(self) -> list[dict]:
+        return [v for k, v in self.data.items() if k.startswith(COMP_PREFIX)]
+
+    def save_competitor(self, item: dict) -> None:
+        with self._lock:
+            self.data[_comp_key(item["name"])] = {**item, "job_id": _comp_key(item["name"])}
+            self._flush()
+
+    def delete_competitor(self, name: str) -> None:
+        with self._lock:
+            self.data.pop(_comp_key(name), None)
             self._flush()
 
 

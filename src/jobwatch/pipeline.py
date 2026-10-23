@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from . import classify, decode, notify, scrapers, watch
 from .dates import posted_date
-from .config import Competitor, env, load_competitors
+from .config import Competitor, effective_competitors, env
 from .models import Job
 from .store import get_store
 
@@ -118,7 +118,7 @@ def run(time_budget_s: float = 840) -> dict:
     known, matched = store.known_ids(), store.matched_ids()
     first_run = not known
     watchlist = store.watchlist()
-    competitors = load_competitors() + watch.as_competitors(watchlist)
+    competitors = effective_competitors(store.competitors()) + watch.as_competitors(watchlist)
 
     new_matched: list[Job] = []
     all_stats = []

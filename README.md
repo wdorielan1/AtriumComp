@@ -38,8 +38,9 @@ up**, and the likely client with a confidence level.
   one you see the open postings that relate to it, whether found through competitors (decoded, or
   the company named in the posting) or on the company's **own careers page**, if you add it.
   Add, edit, re-mark or remove companies right on this tab.
-- **Sources**: health of every site checked, including jobs found, matches and errors. Use it to spot a
-  site whose layout changed.
+- **Competitors**: every competitor you track, with its website and jobs page, how many jobs were read
+  on the last run, and any errors. Use it to spot a site whose layout changed. This is also where you
+  manage the list (see below).
 - **Export CSV** of everything.
 
 **Posting dates.** The tool uses the date the site shows ("Oct 20, 2026", "3 days ago", and so on). When
@@ -125,6 +126,21 @@ It runs automatically within the hour. To run it immediately: in the AWS console
 The first email lists everything currently posted, so it is long. After that you only get
 new postings. Decoding works through the backlog 25 postings per hour.
 
+## Adding competitors, prospects and clients
+
+You don't need to edit any files for this. Use the dashboard:
+
+| To do this | Go to | How |
+|---|---|---|
+| Add one competitor | **Competitors** | Type the name and website (`kornferry.com` is fine). The jobs page is found automatically; add it only if the tool can't find it. |
+| Add many competitors | **Competitors** → *Import a list* | Paste lines like `Name, website` (or copy two columns from Excel/Google Sheets), or upload a CSV. |
+| Track a suggested competitor | **Competitors** | Life-science firms I'd suggest are listed greyed out. Click **Add**. |
+| Pause or remove one | **Competitors** | **Pause** keeps it listed and stops checking it; **Remove** (only for ones you added) deletes it. |
+| Add one prospect or client | **Prospects & Clients** | Type the name, choose Prospect or Current client, and optionally paste their careers page. |
+| Add many prospects/clients | **Prospects & Clients** → *Import a list* | Paste `Name, careers page, prospect/client`, or copy columns from a spreadsheet. A header row is fine. Names already tracked are skipped. |
+
+Changes apply from the next hourly run. The lists in `competitors.yaml` are just the starting list.
+
 ## Fix any competitors that show "No jobs read"
 
 I couldn't open the competitor sites while building this, so some URLs in
@@ -138,7 +154,8 @@ homepage by itself. For any competitor showing 0 jobs:
    portals) may need a small custom adapter; ask and one can be added.
 3. Check locally with `python -m jobwatch.cli discover "Firm Name" --enrich`.
 
-Edit the file on GitHub and commit; it redeploys automatically. Also note:
+You can also fix this from the dashboard: on the **Competitors** tab, click **Edit** next to the site and
+paste the jobs-page address. Also note:
 - **Synectics**: your list had a LinkedIn link. LinkedIn can't be scraped (it blocks it and
   its terms forbid it), so the config uses a guess at their own site.
 

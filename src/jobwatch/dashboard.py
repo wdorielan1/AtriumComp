@@ -6,7 +6,11 @@ Routes: GET /            dashboard (or login form)
         POST /api/decode decode one posting on demand ({"job_id": ..., "force": true to re-decode})
         POST /api/feedback mark a decode right/wrong ({"job_id": ..., "verdict": "right"|"wrong"|""})
         POST /api/watchlist         add/update a prospect or current client
+        POST /api/watchlist/import  add many at once ({"items": [{"name", "careers_url", "status"}], "default_status"})
         POST /api/watchlist/delete  remove one ({"name": ...})
+        POST /api/competitors          add / edit / pause one ({"name", "homepage", "careers_url", "enabled"})
+        POST /api/competitors/import   add many ({"items": [{"name", "homepage"}]}); paused ones are switched on
+        POST /api/competitors/delete   remove one that was added on the dashboard ({"name": ...})
         GET /export.csv  matched jobs as CSV
 """
 
@@ -22,7 +26,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs
 
-from . import classify, decode, watch
+from . import classify, config, decode, watch
 from .config import env
 from .models import Job
 from .store import get_store
@@ -65,15 +69,22 @@ def _prepare(j: dict, watchlist: list[dict]) -> dict:
     return j
 
 
-def _load(days: int | None = None) -> tuple[list[dict], list[dict], list[dict]]:
+def _competitor_rows(store) -> list[dict]:
+    rows = [{"name": c.name, "homepage": c.homepage, "careers_url": c.careers_url, "enabled": c.enabled, "source": src}
+            for c, src in config.merged_competitors(store.competitors())]
+    order = {"built-in": 0, "added": 0, "suggested": 1}
+    return sorted(rows, key=lambda r: (not r["enabled"], order[r["source"]], r["name"].lower()))
+
+
+def _load(days: int | None = None) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     """Matched jobs first seen in the last `days` days (keeps the response under Lambda's 6 MB cap),
-    run stats, and the watchlist."""
+    run stats, the watchlist, and the competitor list."""
     days = int(env("DASHBOARD_DAYS", "120")) if days is None else days
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat() if days else ""
     store = get_store()
     wl = sorted(store.watchlist(), key=lambda w: w["name"].lower())
     jobs = [_prepare(j, wl) for j in store.matched_jobs() if j.get("first_seen", "") >= cutoff]
-    return jobs, store.runs(), wl
+    return jobs, store.runs(), wl, _competitor_rows(store)
 
 
 def _json_body(event: dict) -> tuple[dict | None, dict | None]:
@@ -119,6 +130,136 @@ def _save_watch(event: dict) -> dict:
                       "notes": str(data.get("notes", ""))[:500], "added": existing.get("added", today)})
     return _resp(200, json.dumps({"watchlist": sorted(store.watchlist(), key=lambda w: w["name"].lower())}),
                  "application/json")
+
+
+def _import_watch(event: dict) -> dict:
+    """Add many prospects/clients at once. Names already tracked are left alone (a blank careers URL is filled in)."""
+    data, err = _json_body(event)
+    if err:
+        return err
+    items, default = data.get("items"), data.get("default_status", watch.PROSPECT)
+    if not isinstance(items, list) or not items or len(items) > 500:
+        return _resp(400, '{"error":"Provide between 1 and 500 companies."}', "application/json")
+    if default not in (watch.PROSPECT, watch.CLIENT):
+        return _resp(400, '{"error":"default_status must be prospect or client"}', "application/json")
+    store = get_store()
+    existing = {w["name"].lower(): w for w in store.watchlist()}
+    today = datetime.now(timezone.utc).date().isoformat()
+    added = updated = 0
+    skipped: list[dict] = []
+    for raw in items:
+        raw = raw if isinstance(raw, dict) else {}
+        name = str(raw.get("name", "")).strip()
+        url = str(raw.get("careers_url", "")).strip()
+        status = raw.get("status") or default
+        if not name or len(name) > 100:
+            skipped.append({"name": name[:40], "reason": "missing or too-long name"})
+        elif status not in (watch.PROSPECT, watch.CLIENT):
+            skipped.append({"name": name, "reason": f"unknown status '{status}'"})
+        elif url and not url.startswith(("http://", "https://")):
+            skipped.append({"name": name, "reason": "careers page must start with https://"})
+        elif name.lower() in existing:
+            cur = existing[name.lower()]
+            if url and not cur.get("careers_url"):
+                cur = {**cur, "careers_url": url}
+                store.save_watch(cur)
+                existing[name.lower()] = cur
+                updated += 1
+            else:
+                skipped.append({"name": name, "reason": "already tracked"})
+        else:
+            item = {"name": name, "status": status, "careers_url": url, "aliases": [], "notes": "", "added": today}
+            store.save_watch(item)
+            existing[name.lower()] = item
+            added += 1
+    return _resp(200, json.dumps({"added": added, "updated": updated, "skipped": skipped,
+                                  "watchlist": sorted(store.watchlist(), key=lambda w: w["name"].lower())}),
+                 "application/json")
+
+
+def _norm_url(u: str) -> str:
+    """"kennedybond.com" -> "https://kennedybond.com"; "" stays "". Returns None if it isn't a usable address."""
+    u = (u or "").strip()
+    if not u:
+        return ""
+    if not u.startswith(("http://", "https://")):
+        u = "https://" + u
+    host = u.split("//", 1)[1].split("/", 1)[0]
+    return u if "." in host and " " not in u and len(u) < 500 else None
+
+
+def _competitor_reply(store, **extra) -> dict:
+    return _resp(200, json.dumps({"competitors": _competitor_rows(store), **extra}), "application/json")
+
+
+def _save_competitor(event: dict) -> dict:
+    data, err = _json_body(event)
+    if err:
+        return err
+    name = str(data.get("name", "")).strip()
+    home, jobs_url = _norm_url(data.get("homepage")), _norm_url(data.get("careers_url"))
+    if not name or len(name) > 100:
+        return _resp(400, '{"error":"Competitor name is required (max 100 characters)."}', "application/json")
+    if home is None or jobs_url is None:
+        return _resp(400, '{"error":"That web address doesn\'t look right. Example: https://www.example.com"}',
+                     "application/json")
+    store = get_store()
+    current = {c.name.lower(): c for c, _ in config.merged_competitors(store.competitors())}.get(name.lower())
+    if not (home or jobs_url or (current and (current.homepage or current.careers_url))):
+        return _resp(400, '{"error":"Add the competitor\'s website or its jobs page."}', "application/json")
+    store.save_competitor({"name": current.name if current else name, "homepage": home, "careers_url": jobs_url,
+                           "enabled": bool(data.get("enabled", True))})
+    return _competitor_reply(store)
+
+
+def _import_competitors(event: dict) -> dict:
+    """Add many competitors at once. Ones already listed are skipped, except paused/suggested ones, which are switched on."""
+    data, err = _json_body(event)
+    if err:
+        return err
+    items = data.get("items")
+    if not isinstance(items, list) or not items or len(items) > 500:
+        return _resp(400, '{"error":"Provide between 1 and 500 competitors."}', "application/json")
+    store = get_store()
+    known = {c.name.lower(): c for c, _ in config.merged_competitors(store.competitors())}
+    added = resumed = 0
+    skipped: list[dict] = []
+    for raw in items:
+        raw = raw if isinstance(raw, dict) else {}
+        name = str(raw.get("name", "")).strip()
+        home, jobs_url = _norm_url(raw.get("homepage")), _norm_url(raw.get("careers_url"))
+        cur = known.get(name.lower())
+        if not name or len(name) > 100:
+            skipped.append({"name": name[:40], "reason": "missing or too-long name"})
+        elif home is None or jobs_url is None:
+            skipped.append({"name": name, "reason": "web address doesn't look right"})
+        elif cur and cur.enabled:
+            skipped.append({"name": name, "reason": "already tracked"})
+        elif cur:  # paused or suggested: switch it on (and take a better address if one was given)
+            store.save_competitor({"name": cur.name, "homepage": home, "careers_url": jobs_url, "enabled": True})
+            resumed += 1
+        elif not (home or jobs_url):
+            skipped.append({"name": name, "reason": "no website given"})
+        else:
+            store.save_competitor({"name": name, "homepage": home, "careers_url": jobs_url, "enabled": True})
+            known[name.lower()] = config.Competitor(name=name, homepage=home, careers_url=jobs_url)
+            added += 1
+    return _competitor_reply(store, added=added, resumed=resumed, skipped=skipped)
+
+
+def _delete_competitor(event: dict) -> dict:
+    data, err = _json_body(event)
+    if err:
+        return err
+    name = str(data.get("name", "")).strip()
+    store = get_store()
+    source = {c.name.lower(): s for c, s in config.merged_competitors(store.competitors())}.get(name.lower())
+    if source is None:
+        return _resp(404, '{"error":"competitor not found"}', "application/json")
+    if source != "added":
+        return _resp(400, '{"error":"Built-in competitors can be paused, not removed."}', "application/json")
+    store.delete_competitor(name)
+    return _competitor_reply(store)
 
 
 def _delete_watch(event: dict) -> dict:
@@ -214,13 +355,22 @@ def handler(event: dict, context=None) -> dict:
         return _feedback(event)
     if path == "/api/watchlist" and method == "POST":
         return _save_watch(event)
+    if path == "/api/competitors" and method == "POST":
+        return _save_competitor(event)
+    if path == "/api/competitors/import" and method == "POST":
+        return _import_competitors(event)
+    if path == "/api/competitors/delete" and method == "POST":
+        return _delete_competitor(event)
+    if path == "/api/watchlist/import" and method == "POST":
+        return _import_watch(event)
     if path == "/api/watchlist/delete" and method == "POST":
         return _delete_watch(event)
     if path == "/api/data":
-        jobs, runs, wl = _load()
-        return _resp(200, json.dumps({"jobs": jobs, "runs": runs, "watchlist": wl}), "application/json")
+        jobs, runs, wl, comps = _load()
+        return _resp(200, json.dumps({"jobs": jobs, "runs": runs, "watchlist": wl, "competitors": comps}),
+                     "application/json")
     if path == "/export.csv":
-        jobs, _, _ = _load(days=0)
+        jobs, _, _, _ = _load(days=0)
         return _resp(200, _csv(jobs), "text/csv; charset=utf-8",
                      headers={"Content-Disposition": 'attachment; filename="competitor-jobs.csv"'})
     if path == "/logout":
@@ -271,6 +421,8 @@ white-space:nowrap}.t-direct{color:var(--direct)}.t-temp{color:var(--temp)}.t-c2
 .muted{color:var(--muted)}.small{font-size:12px}details summary{cursor:pointer}.closed{opacity:.55}
 button.decode{padding:3px 10px;font-size:12px;border-color:var(--accent);color:var(--accent)}
 button.decode:hover{background:var(--accent);color:#fff}
+.imp-box{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:6px}
+#imp-text{width:100%;font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px}
 .nowrap{white-space:nowrap}.rate{margin-top:4px;color:var(--muted)}
 button.fb{padding:0 7px;font-size:12px;line-height:18px;margin-left:2px}
 button.fb.on-right{background:var(--hi);color:#fff;border-color:var(--hi)}button.fb.on-wrong{background:#cf222e;color:#fff;border-color:#cf222e}.w-client{background:color-mix(in srgb,var(--hi) 18%,transparent);color:var(--hi)}
@@ -288,7 +440,7 @@ td[data-l]::before{content:attr(data-l) ": ";color:var(--muted)}}
 </style></head><body>
 <header><h1>Competitor Job Watch</h1>
 <nav class=tabs><button data-tab=jobs class=on>Jobs</button><button data-tab=clients>Competitor clients</button>
-<button data-tab=accounts>Prospects &amp; Clients</button><button data-tab=sources>Sources</button></nav>
+<button data-tab=accounts>Prospects &amp; Clients</button><button data-tab=sources>Competitors</button></nav>
 <div class=small><a href=/export.csv>Export CSV</a> &middot; <a href=/logout>Sign out</a></div></header>
 <main><div class=stats id=stats></div>
 <div class=filters id=filters>
@@ -309,6 +461,21 @@ td[data-l]::before{content:attr(data-l) ": ";color:var(--muted)}}
 <input id=a-alias placeholder="Other names, comma-separated (optional)" style="flex:1;min-width:160px">
 <button class=primary id=a-save>Add</button><span id=a-msg class="small err"></span>
 </form>
+<form id=comp-form class="filters" autocomplete=off style="display:none">
+<input id=c-name placeholder="Competitor name (e.g. Korn Ferry)" required maxlength=100 style="flex:2;min-width:200px">
+<input id=c-home placeholder="Website (e.g. kornferry.com)" style="flex:2;min-width:200px">
+<input id=c-jobs placeholder="Jobs page (optional; found automatically if blank)" style="flex:2;min-width:200px">
+<button class=primary id=c-save>Add</button><span id=c-msg class="small err"></span>
+</form>
+<details id=acct-import style="display:none;margin-bottom:10px"><summary id=imp-title class=small style="cursor:pointer;color:var(--accent)">Import a list of companies (paste from a spreadsheet, or upload a CSV)</summary>
+<div class=imp-box>
+<p id=imp-help class="small muted" style="margin:6px 0"></p>
+<textarea id=imp-text rows=7></textarea>
+<div class=filters style="margin:8px 0 0"><input type=file id=imp-file accept=".csv,.tsv,.txt">
+<select id=imp-status><option value=prospect>Add as prospects</option><option value=client>Add as current clients</option></select>
+<button class=primary id=imp-go type=button>Import</button><span id=imp-msg class=small></span></div>
+<div id=imp-detail class="small muted"></div>
+</div></details>
 <div id=acct-tabs class=seg style="display:none"><button data-s="" class=on>All</button><button data-s=prospect>Prospects</button><button data-s=client>Current clients</button></div>
 <div id=view class=card></div></main>
 <script>
@@ -321,7 +488,7 @@ async function decodeNow(id,force=false){BUSY.add(id);delete ERRS[id];render();
   try{replaceJob(await post('/api/decode',{job_id:id,force}))}
   catch(e){ERRS[id]=e.message}finally{BUSY.delete(id);render()}}
 async function rate(id,verdict){try{replaceJob(await post('/api/feedback',{job_id:id,verdict}));render()}catch(e){alert(e.message)}}
-const modelName=m=>{m=String(m||'').replace(/^claude-/,'').replace(/-(\d+)-(\d+)$/,' $1.$2').replace(/-(\d+)$/,' $1');return m?m[0].toUpperCase()+m.slice(1):'?'};
+const modelName=m=>{m=String(m||'').replace(/^claude-/,'').replace(/-(\\d+)-(\\d+)$/,' $1.$2').replace(/-(\\d+)$/,' $1');return m?m[0].toUpperCase()+m.slice(1):'?'};
 // Accuracy of decodes you've marked right/wrong, per model: the evidence for keeping Haiku or moving to Sonnet.
 function accuracy(){const by={};DATA.jobs.forEach(j=>{const d=j.decode||{};if(d.feedback!=='right'&&d.feedback!=='wrong')return;
   const m=modelName(d.model);(by[m]=by[m]||{r:0,n:0});by[m].n++;if(d.feedback==='right')by[m].r++});return by}
@@ -440,16 +607,42 @@ function renderAccounts(){
       <a href=# class=a-del data-name="${esc(w.name)}">Remove</a></td></tr>`}).join('')
   ||'<tr><td colspan=5 class=muted>None in this group.</td></tr>'}</tbody></table>`}
 function renderSources(){
-  const runs=[...DATA.runs].sort((a,b)=>(a.direct-b.direct)||a.competitor.localeCompare(b.competitor));
-  const counts={};DATA.jobs.forEach(j=>{if(isOpen(j))counts[j.competitor]=(counts[j.competitor]||0)+1});
-  $('#view').innerHTML=`<table><thead><tr><th>Site</th><th>Jobs on site</th><th>Matching (open)</th><th>New last run</th><th class=hide-sm>Last run</th><th>Status</th></tr></thead><tbody>
-  ${runs.map(r=>`<tr><td><b>${esc(r.competitor)}</b>${r.direct?' <span class="small muted">(careers page of a prospect/client)</span>':''}</td><td data-l="Jobs on site">${r.found}</td><td data-l="Matching (open)">${counts[r.competitor]||0}</td><td data-l="New last run">${r.new_matched}${r.deferred?` <span class="small muted">(+${r.deferred} queued)</span>`:''}</td>
-  <td class="small muted hide-sm">${esc(new Date(r.ran_at).toLocaleString())}</td>
-  <td class=small>${r.error?`<span class=err>${esc(r.error)}</span>`:!r.found?`<span class=err>No jobs read — check the ${r.direct?'careers page URL':'URL in competitors.yaml'}</span>`:'<span class=conf-high>OK</span>'}</td></tr>`).join('')
-  ||'<tr><td colspan=6 class=muted>No runs yet.</td></tr>'}</tbody></table>`}
+  const runs={};DATA.runs.forEach(r=>runs[r.competitor]=r);
+  const counts={};DATA.jobs.forEach(j=>{if(isOpen(j)&&!j.direct)counts[j.competitor]=(counts[j.competitor]||0)+1});
+  const link=(u,t)=>u?`<a href="${esc(u)}" target=_blank rel=noopener>${t}</a>`:'';
+  const status=(c,r)=>!c.enabled?(c.source==='suggested'?'<span class=muted>Suggested: not tracking yet</span>':'<span class=muted>Paused</span>')
+    :!r?'<span class=muted>Waiting for the next hourly run</span>'
+    :r.error?`<span class=err>${esc(r.error)}</span>`
+    :!r.found?'<span class=err>No jobs read: add the jobs page link (Edit)</span>':'<span class=conf-high>OK</span>';
+  const comps=DATA.competitors||[], active=comps.filter(c=>c.enabled).length;
+  const direct=DATA.runs.filter(r=>r.direct).sort((a,b)=>a.competitor.localeCompare(b.competitor));
+  $('#stats').innerHTML=statHtml([[active,'competitors tracked'],[comps.filter(c=>!c.enabled).length,'paused or suggested'],
+    [Object.values(runs).filter(r=>!r.direct&&(r.error||!r.found)).length,'sites with problems'],[direct.length,'prospect/client careers pages']]);
+  $('#view').innerHTML=`<table><thead><tr><th>Competitor</th><th>Jobs on site</th><th>Matching (open)</th><th>New last run</th><th class=hide-sm>Last run</th><th>Status</th><th></th></tr></thead><tbody>
+  ${comps.map(c=>{const r=runs[c.name];const sug=c.source==='suggested';
+    return `<tr class="${c.enabled?'':'closed'}"><td><b>${esc(c.name)}</b> ${sug?'<span class=chip>Suggested</span>':c.source==='added'?'<span class=chip>Added by you</span>':''}
+    <div class="small">${link(c.homepage,'Website')}${c.homepage&&c.careers_url?' &middot; ':''}${link(c.careers_url,'Jobs page')}</div></td>
+    <td data-l="Jobs on site">${r?r.found:'—'}</td><td data-l="Matching (open)">${c.enabled?(counts[c.name]||0):'—'}</td>
+    <td data-l="New last run">${r?r.new_matched+(r.deferred?` <span class="small muted">(+${r.deferred} queued)</span>`:''):'—'}</td>
+    <td class="small muted hide-sm">${r?esc(new Date(r.ran_at).toLocaleString()):'—'}</td><td class=small>${status(c,r)}</td>
+    <td class="small nowrap">${c.enabled?'':`<a href=# class=c-resume data-name="${esc(c.name)}">${sug?'Add':'Resume'}</a> &middot; `}<a href=# class=c-edit data-name="${esc(c.name)}">Edit</a>${c.enabled?` &middot; <a href=# class=c-pause data-name="${esc(c.name)}">Pause</a>`:''}${c.source==='added'?` &middot; <a href=# class=c-del data-name="${esc(c.name)}">Remove</a>`:''}</td></tr>`}).join('')
+  ||'<tr><td colspan=7 class=muted>No competitors yet.</td></tr>'}</tbody></table>
+  ${direct.length?`<div style="padding:10px 12px 4px" class="small muted">Careers pages of your prospects and clients</div><table><thead><tr><th>Company</th><th>Jobs on site</th><th>New last run</th><th>Status</th></tr></thead><tbody>
+  ${direct.map(r=>`<tr><td><b>${esc(r.competitor)}</b></td><td data-l="Jobs on site">${r.found}</td><td data-l="New last run">${r.new_matched}</td>
+  <td class=small>${r.error?`<span class=err>${esc(r.error)}</span>`:!r.found?'<span class=err>No jobs read: check the careers page URL</span>':'<span class=conf-high>OK</span>'}</td></tr>`).join('')}</tbody></table>`:''}`}
 function render(){
   $('#filters').style.display=TAB==='jobs'||TAB==='clients'?'flex':'none';
   $('#acct-form').style.display=$('#acct-tabs').style.display=TAB==='accounts'?'flex':'none';
+  $('#acct-import').style.display=TAB==='accounts'||TAB==='sources'?'block':'none';
+  $('#comp-form').style.display=TAB==='sources'?'flex':'none';
+  $('#imp-status').style.display=TAB==='accounts'?'':'none';
+  $('#imp-text').placeholder=TAB==='sources'
+    ?['Korn Ferry, kornferry.com','Planet Pharma\\tplanetpharma.com\\tplanetpharma.com/jobs','Slone Partners, https://www.slonepartners.com'].join('\\n')
+    :['Vertex Pharmaceuticals, https://careers.vrtx.com','Moderna\\thttps://www.modernatx.com/careers\\tclient','Ionis Pharmaceuticals'].join('\\n');
+  $('#imp-title').textContent=TAB==='sources'?'Import a list of competitors (paste from a spreadsheet, or upload a CSV)':'Import a list of companies (paste from a spreadsheet, or upload a CSV)';
+  $('#imp-help').innerHTML=TAB==='sources'
+    ?'One competitor per line: <b>name</b>, then its <b>website</b> and optionally its <b>jobs page</b>, separated by commas or tabs. Copying columns straight from Excel or Google Sheets works. Competitors already tracked are skipped; paused or suggested ones are switched on.'
+    :'One company per line: <b>name</b>, then optionally a <b>careers page URL</b> and <b>prospect</b> or <b>client</b>, separated by commas or tabs. Copying two or three columns straight from Excel or Google Sheets works. A header row is fine. Companies you already track are left alone.';
   if(TAB==='accounts')return renderAccounts();
   const rows=filtered();renderStats(rows);
   ({jobs:renderJobs,clients:renderClients,sources:renderSources})[TAB](rows)}
@@ -474,6 +667,42 @@ document.addEventListener('click',async e=>{const t=e.target;
   if(a.classList.contains('a-toggle'))return saveWatch({...w,status:w.status==='client'?'prospect':'client'}).catch(err=>alert(err.message));
   $('#a-name').value=w.name;$('#a-status').value=w.status;$('#a-url').value=w.careers_url||'';$('#a-alias').value=(w.aliases||[]).join(', ');
   $('#a-save').textContent='Save';$('#a-name').focus()});
+// Parse pasted/uploaded text: name [, careers URL] [, prospect|client]; commas or tabs; quotes allowed; header row skipped.
+function splitRow(line){const sep=line.includes('\\t')?'\\t':',',out=[];let cur='',q=false;
+  for(const ch of line){if(ch==='"')q=!q;else if(ch===sep&&!q){out.push(cur);cur=''}else cur+=ch}out.push(cur);return out.map(s=>s.trim())}
+function parseList(text,defStatus){const seen=new Set(),items=[];
+  text.split(/\\r?\\n/).forEach((line,i)=>{if(!line.trim())return;const f=splitRow(line);
+    if(i===0&&/^(company|name|account)\\b/i.test(f[0]))return;
+    const name=f[0].replace(/^"|"$/g,'').trim();if(!name||seen.has(name.toLowerCase()))return;seen.add(name.toLowerCase());
+    const rest=f.slice(1);const isUrl=x=>/^(https?:\\/\\/)?[\\w-]+(\\.[\\w-]+)+(\\/\\S*)?$/i.test(x)&&!/^(prospect|client)$/i.test(x);
+    const urls=rest.filter(isUrl);
+    const st=(rest.find(x=>/^(prospect|(current )?client)s?$/i.test(x))||'').toLowerCase();
+    items.push({name,urls,status:st?(st.includes('client')?'client':'prospect'):defStatus})});
+  return items}
+$('#imp-file').addEventListener('change',async e=>{const f=e.target.files[0];if(f)$('#imp-text').value=await f.text()});
+$('#imp-go').addEventListener('click',async()=>{const msg=$('#imp-msg'),det=$('#imp-detail');msg.className='small';det.textContent='';
+  const parsed=parseList($('#imp-text').value,$('#imp-status').value), comps=TAB==='sources';
+  if(!parsed.length){msg.className='small err';msg.textContent='Nothing to import: paste at least one name.';return}
+  msg.textContent=`Importing ${parsed.length}…`;
+  try{let out;
+    if(comps){out=await post('/api/competitors/import',{items:parsed.map(p=>({name:p.name,homepage:p.urls[0]||'',careers_url:p.urls[1]||''}))});DATA.competitors=out.competitors}
+    else{out=await post('/api/watchlist/import',{items:parsed.map(p=>({name:p.name,careers_url:p.urls[0]||'',status:p.status})),default_status:$('#imp-status').value});DATA.watchlist=out.watchlist}
+    msg.textContent=`Added ${out.added}`+(out.resumed?`, switched on ${out.resumed}`:'')+(out.updated?`, updated ${out.updated}`:'')+(out.skipped.length?`, skipped ${out.skipped.length}`:'');
+    det.textContent=out.skipped.map(s=>`${s.name}: ${s.reason}`).join(' · ');
+    $('#imp-text').value='';$('#imp-file').value='';await load()}catch(err){msg.className='small err';msg.textContent=err.message}});
+async function saveComp(body){const out=await post('/api/competitors',body);DATA.competitors=out.competitors;render()}
+document.addEventListener('click',async e=>{const a=e.target.closest('a.c-resume,a.c-pause,a.c-edit,a.c-del');if(!a)return;e.preventDefault();
+  const c=(DATA.competitors||[]).find(x=>x.name===a.dataset.name);if(!c)return;
+  try{if(a.classList.contains('c-del')){if(!confirm(`Remove ${c.name}? Its postings stay in the list.`))return;
+      const out=await post('/api/competitors/delete',{name:c.name});DATA.competitors=out.competitors;return render()}
+    if(a.classList.contains('c-pause'))return saveComp({...c,enabled:false});
+    if(a.classList.contains('c-resume'))return saveComp({...c,enabled:true});
+    $('#c-name').value=c.name;$('#c-home').value=c.homepage||'';$('#c-jobs').value=c.careers_url||'';$('#c-save').textContent='Save';$('#c-name').focus()}
+  catch(err){alert(err.message)}});
+$('#comp-form').addEventListener('submit',async e=>{e.preventDefault();$('#c-msg').textContent='';
+  const cur=(DATA.competitors||[]).find(x=>x.name.toLowerCase()===$('#c-name').value.trim().toLowerCase());
+  try{await saveComp({name:$('#c-name').value,homepage:$('#c-home').value,careers_url:$('#c-jobs').value,enabled:true});
+    e.target.reset();$('#c-save').textContent='Add'}catch(err){$('#c-msg').textContent=err.message}});
 $('#acct-form').addEventListener('submit',async e=>{e.preventDefault();$('#a-msg').textContent='';
   const existing=DATA.watchlist.find(x=>x.name.toLowerCase()===$('#a-name').value.trim().toLowerCase())||{};
   try{await saveWatch({name:$('#a-name').value,status:$('#a-status').value,careers_url:$('#a-url').value,aliases:$('#a-alias').value,notes:existing.notes||''});

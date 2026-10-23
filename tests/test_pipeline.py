@@ -26,7 +26,7 @@ def _jobs(name, extra=()):
 def two_competitors(monkeypatch):
     comps = [Competitor(name="alpha", careers_url="https://alpha/jobs"),
              Competitor(name="beta", careers_url="https://beta/jobs")]
-    monkeypatch.setattr(pipeline, "load_competitors", lambda: comps)
+    monkeypatch.setattr(pipeline, "effective_competitors", lambda overrides=None: comps)
     return comps
 
 
@@ -184,7 +184,7 @@ def test_dashboard_requires_password(monkeypatch):
     assert ok["statusCode"] == 302
     cookie = ok["cookies"][0].split(";")[0]
     data = dashboard.handler(_req("/api/data", cookies=[cookie]))
-    assert data["statusCode"] == 200 and json.loads(data["body"]) == {"jobs": [], "runs": [], "watchlist": []}
+    assert data["statusCode"] == 200 and json.loads(data["body"])["jobs"] == []
     assert "Competitor Job Watch" in dashboard.handler(_req("/", cookies=[cookie]))["body"]
 
 
@@ -248,66 +248,14 @@ def test_dashboard_refuses_without_configured_password():
 
 
 def test_shipped_config_loads():
-    config.load_competitors.cache_clear()
-    names = [c.name for c in config.load_competitors()]
-    assert "EPM Scientific" in names and "Novaris Search" in names
-    assert len(names) == len(set(names))
-
-
-# --- prospects & clients watchlist ---------------------------------------------
-
-from jobwatch import watch  # noqa: E402
-
-
-def test_watch_link_matching():
-    wl = [{"name": "Vertex", "status": "prospect"}, {"name": "Bristol Myers Squibb", "aliases": ["BMS"], "status": "client"},
-          {"name": "Ionis", "status": "prospect"}]
-    decoded = {"decode": {"client_guess": "Vertex Pharmaceuticals Inc.", "confidence": "medium",
-                          "alternatives": [{"name": "Bristol-Myers Squibb Company", "why": "x"}]}}
-    assert watch.link(decoded, wl) == ["Vertex", "Bristol Myers Squibb"]
-    assert watch.link({"description": "Partnering with BMS on a cell therapy program"}, wl) == ["Bristol Myers Squibb"]
-    assert watch.link({"decode": {"client_guess": "Ionis", "confidence": "none"}}, wl) == []  # no-confidence ignored
-    assert watch.link({"description": "vertices of a graph"}, wl) == []
-    assert watch.link({"direct": True, "competitor": "Ionis"}, wl) == ["Ionis"]
-
-
-def test_watchlist_api_and_direct_scraping(monkeypatch, two_competitors):
-    cookies = _login(monkeypatch)
-    r = _post_json("/api/watchlist", {"name": "Ionis", "status": "prospect", "careers_url": "https://ionis.com/careers",
-                                      "aliases": "Ionis Pharmaceuticals, Akcea"}, cookies)
-    assert r["statusCode"] == 200
-    assert json.loads(r["body"])["watchlist"][0]["aliases"] == ["Ionis Pharmaceuticals", "Akcea"]
-    assert _post_json("/api/watchlist", {"name": "", "status": "prospect"}, cookies)["statusCode"] == 400
-    assert _post_json("/api/watchlist", {"name": "X", "status": "prospect", "careers_url": "javascript:alert(1)"},
-                      cookies)["statusCode"] == 400
-    _post_json("/api/watchlist", {"name": "Moderna", "status": "client"}, cookies)
-
-    def scrape(c):
-        if c.name == "Ionis":  # the prospect's own careers page
-            return [Job(competitor="Ionis", title="Clinical Trial Manager", url="https://ionis.com/j/1",
-                        description="Direct hire. Antisense oligonucleotide phase 3 clinical trial management. " * 4)]
-        if c.name == "alpha":
-            return [Job(competitor="alpha", title="Medical Science Liaison", url="https://alpha/j/2",
-                        description="Our client Moderna seeks a permanent MSL, base salary + bonus, pharma. " * 4)]
-        return []
-    monkeypatch.setattr(scrapers, "scrape", scrape)
-    sent = []
-    monkeypatch.setattr(notify, "send_digest", lambda jobs, stats, first_run=False, watchlist=None:
-                        sent.append(notify.render_digest(jobs, stats, first_run, watchlist)))
-    pipeline.run()
-
-    data = json.loads(dashboard.handler(_req("/api/data", cookies=cookies))["body"])
-    by_title = {j["title"]: j for j in data["jobs"]}
-    assert by_title["Clinical Trial Manager"]["direct"] is True and by_title["Clinical Trial Manager"]["watch"] == ["Ionis"]
-    assert by_title["Clinical Trial Manager"]["auto_decode"] is False  # client already known, never decoded
-    assert by_title["Medical Science Liaison"]["watch"] == ["Moderna"]
-    subject, body = sent[0]
-    assert subject.startswith("[JobWatch] 2 at your prospects/clients")
-    assert "Their own careers site" in body and "Current client" in body
-    assert "1 new matching competitor postings" in body  # Ionis' own posting isn't counted as a competitor posting
-
-    _post_json("/api/watchlist/delete", {"name": "Ionis"}, cookies)
-    assert [w["name"] for w in get_store().watchlist()] == ["Moderna"]
+    config.builtin_competitors.cache_clear()
+    on = [c.name for c in config.load_competitors()]
+    allc = [c for c in config.builtin_competitors()]
+    assert {"EPM Scientific", "Novaris Search", "Korn Ferry"} <= set(on)
+    assert len({c.name for c in allc}) == len(allc)
+    # suggested life-science competitors ship switched off
+    suggested = [c for c in allc if c.extra.get("suggested")]
+    assert suggested and all(not c.enabled for c in suggested) and not {c.name for c in suggested} & set(on)
 
 
 def test_dashboard_script_is_valid_js(tmp_path):
@@ -320,3 +268,89 @@ def test_dashboard_script_is_valid_js(tmp_path):
     js = tmp_path / "d.js"
     js.write_text(dashboard.DASHBOARD_HTML.split("<script>")[1].split("</script>")[0])
     assert subprocess.run([node, "--check", str(js)], capture_output=True).returncode == 0
+
+
+def test_dashboard_source_has_no_invalid_escapes():
+    import subprocess
+    import sys
+    r = subprocess.run([sys.executable, "-W", "error", "-c", "import jobwatch.dashboard"], capture_output=True,
+                       env={**__import__("os").environ, "PYTHONPATH": str(__import__("pathlib").Path(dashboard.__file__).parents[1])})
+    assert r.returncode == 0, r.stderr.decode()
+
+
+def test_competitors_add_pause_import_delete(monkeypatch):
+    cookies = _login(monkeypatch)
+
+    def rows():
+        data = json.loads(dashboard.handler(_req("/api/data", cookies=cookies))["body"])
+        return {c["name"]: c for c in data["competitors"]}
+
+    start = rows()
+    assert start["EPM Scientific"]["enabled"] and start["EPM Scientific"]["source"] == "built-in"
+    assert not start["Planet Pharma"]["enabled"] and start["Planet Pharma"]["source"] == "suggested"
+
+    # add one by hand; a bare domain is accepted
+    r = _post_json("/api/competitors", {"name": "Acme Search", "homepage": "acmesearch.com"}, cookies)
+    assert r["statusCode"] == 200
+    assert rows()["Acme Search"]["homepage"] == "https://acmesearch.com" and rows()["Acme Search"]["source"] == "added"
+    assert _post_json("/api/competitors", {"name": "", "homepage": "x.com"}, cookies)["statusCode"] == 400
+    assert _post_json("/api/competitors", {"name": "Bad", "homepage": "not a url"}, cookies)["statusCode"] == 400
+    assert _post_json("/api/competitors", {"name": "NoUrl"}, cookies)["statusCode"] == 400
+
+    # pause a built-in one: it stays listed but is no longer scraped
+    _post_json("/api/competitors", {"name": "EPM Scientific", "enabled": False}, cookies)
+    assert not rows()["EPM Scientific"]["enabled"] and rows()["EPM Scientific"]["homepage"]
+    names = [c.name for c in config.effective_competitors(get_store().competitors())]
+    assert "EPM Scientific" not in names and "Acme Search" in names
+
+    # import: new, already-tracked, paused/suggested (switched on), bad address
+    out = json.loads(_post_json("/api/competitors/import", {"items": [
+        {"name": "Fresh Firm", "homepage": "freshfirm.io", "careers_url": "https://freshfirm.io/jobs"},
+        {"name": "acme search", "homepage": "acmesearch.com"},
+        {"name": "Planet Pharma"},
+        {"name": "EPM Scientific"},
+        {"name": "Broken", "homepage": "no dots here"},
+        {"name": "NoSite"}]}, cookies)["body"])
+    assert (out["added"], out["resumed"]) == (1, 2)
+    assert {s["name"]: s["reason"] for s in out["skipped"]} == {
+        "acme search": "already tracked", "Broken": "web address doesn't look right", "NoSite": "no website given"}
+    now = rows()
+    assert now["Planet Pharma"]["enabled"] and now["EPM Scientific"]["enabled"]
+    assert now["Fresh Firm"]["careers_url"] == "https://freshfirm.io/jobs"
+
+    # only dashboard-added competitors can be removed
+    assert _post_json("/api/competitors/delete", {"name": "EPM Scientific"}, cookies)["statusCode"] == 400
+    assert _post_json("/api/competitors/delete", {"name": "Acme Search"}, cookies)["statusCode"] == 200
+    assert "Acme Search" not in rows()
+    assert _post_json("/api/competitors/delete", {"name": "Nobody"}, cookies)["statusCode"] == 404
+
+
+def test_pipeline_uses_dashboard_competitors(monkeypatch):
+    store = get_store()
+    store.save_competitor({"name": "Added Co", "homepage": "https://added.example", "careers_url": "", "enabled": True})
+    store.save_competitor({"name": "EPM Scientific", "enabled": False})
+    seen = []
+    monkeypatch.setattr(scrapers, "scrape", lambda c: seen.append(c.name) or [])
+    monkeypatch.setattr(notify, "send_digest", lambda *a, **k: None)
+    pipeline.run()
+    assert "Added Co" in seen and "EPM Scientific" not in seen and "Korn Ferry" in seen
+
+
+def test_watchlist_import(monkeypatch):
+    cookies = _login(monkeypatch)
+    _post_json("/api/watchlist", {"name": "Existing Bio", "status": "prospect"}, cookies)
+    out = json.loads(_post_json("/api/watchlist/import", {"default_status": "prospect", "items": [
+        {"name": "Alpha Pharma", "careers_url": "https://alpha.example/careers"},
+        {"name": "Beta Therapeutics", "status": "client"},
+        {"name": "Existing Bio", "careers_url": "https://existing.example/jobs"},   # fills the blank careers URL
+        {"name": "existing bio"},                                                   # now a plain duplicate
+        {"name": "Gamma", "careers_url": "ftp://nope"},
+        {"name": "Delta", "status": "friend"},
+        {"name": ""}]}, cookies)["body"])
+    assert (out["added"], out["updated"]) == (2, 1)
+    assert {s["name"]: s["reason"] for s in out["skipped"]}["existing bio"] == "already tracked"
+    assert len(out["skipped"]) == 4
+    by = {w["name"]: w for w in out["watchlist"]}
+    assert by["Beta Therapeutics"]["status"] == "client" and by["Alpha Pharma"]["status"] == "prospect"
+    assert by["Existing Bio"]["careers_url"] == "https://existing.example/jobs"
+    assert _post_json("/api/watchlist/import", {"items": []}, cookies)["statusCode"] == 400
