@@ -108,9 +108,7 @@ competitors:
     homepage: https://www.thefountaingroup.com/
 
   - name: Novaris Search
-    # Couldn't find this firm's website; add homepage and set enabled: true.
-    homepage: ""
-    enabled: false
+    homepage: https://novarissearch.com/
 
   - name: JCW Life Sciences
     homepage: https://www.jcwsearch.com/

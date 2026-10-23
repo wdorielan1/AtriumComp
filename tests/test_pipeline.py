@@ -167,5 +167,5 @@ def test_dashboard_refuses_without_configured_password():
 def test_shipped_config_loads():
     config.load_competitors.cache_clear()
     names = [c.name for c in config.load_competitors()]
-    assert "EPM Scientific" in names and "Novaris Search" not in names  # disabled until URL known
+    assert "EPM Scientific" in names and "Novaris Search" in names
     assert len(names) == len(set(names))

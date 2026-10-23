@@ -103,8 +103,7 @@ homepage by itself. For any competitor showing 0 jobs:
    portals) may need a small custom adapter; ask and one can be added.
 3. Check locally with `python -m jobwatch.cli discover "Firm Name" --enrich`.
 
-Edit the file on GitHub and commit; it redeploys automatically. Also still needed:
-- **Novaris Search**: I couldn't find its website. Add its `homepage` and set `enabled: true`.
+Edit the file on GitHub and commit; it redeploys automatically. Also note:
 - **Synectics**: your list had a LinkedIn link. LinkedIn can't be scraped (it blocks it and
   its terms forbid it), so the config uses a guess at their own site.
 
