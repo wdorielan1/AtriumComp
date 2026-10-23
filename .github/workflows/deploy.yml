@@ -1,0 +1,63 @@
+name: Test and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+    steps:
+      - name: Skip when AWS isn't configured yet
+        if: env.HAS_AWS != 'true'
+        run: echo "::notice::Add AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets to enable deploys (see README)."
+      - uses: actions/checkout@v4
+        if: env.HAS_AWS == 'true'
+      - uses: actions/setup-python@v5
+        if: env.HAS_AWS == 'true'
+        with:
+          python-version: "3.12"
+      - uses: aws-actions/setup-sam@v2
+        if: env.HAS_AWS == 'true'
+        with:
+          use-installer: true
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: env.HAS_AWS == 'true'
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Build and deploy
+        if: env.HAS_AWS == 'true'
+        run: |
+          sam build
+          sam deploy \
+            --stack-name jobwatch \
+            --capabilities CAPABILITY_IAM \
+            --resolve-s3 \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              "EmailFrom=${{ vars.EMAIL_FROM }}" \
+              "EmailTo=${{ vars.EMAIL_TO }}" \
+              "DecodeLimit=${{ vars.DECODE_LIMIT || '25' }}" \
+              "DecodeWebSearches=${{ vars.DECODE_WEB_SEARCHES || '4' }}"
+          aws cloudformation describe-stacks --stack-name jobwatch \
+            --query "Stacks[0].Outputs[?OutputKey=='DashboardUrl'].OutputValue" --output text

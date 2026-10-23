@@ -1,0 +1,4 @@
+anthropic>=2.2.0
+requests>=2.32
+beautifulsoup4>=4.12
+PyYAML>=6.0

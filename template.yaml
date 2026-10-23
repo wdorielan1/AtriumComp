@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  JobWatch - hourly scrape of competitor staffing-firm job boards, life-science
+  matching, client decoding with Claude, email digest, and a web dashboard.
+
+Parameters:
+  EmailFrom:
+    Type: String
+    Description: SES-verified sender address (e.g. jobwatch@yourdomain.com)
+  EmailTo:
+    Type: String
+    Description: Comma-separated recipients
+  AnthropicKeyParam:
+    Type: String
+    Default: /jobwatch/anthropic-api-key
+    Description: SSM SecureString parameter holding the Anthropic API key (create it before deploying)
+  DashboardPasswordParam:
+    Type: String
+    Default: /jobwatch/dashboard-password
+    Description: SSM SecureString parameter holding the dashboard password (create it before deploying)
+  Schedule:
+    Type: String
+    Default: rate(1 hour)
+  DecodeLimit:
+    Type: Number
+    Default: 25
+    Description: Max postings decoded by Claude per run (backlog drains over later runs). 0 disables decoding.
+  DecodeWebSearches:
+    Type: Number
+    Default: 4
+    Description: Max web searches Claude may run per posting while decoding. 0 disables web search.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [x86_64]
+    CodeUri: src/
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref JobsTable
+
+Resources:
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  ScrapeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: jobwatch.handlers.scrape_handler
+      Timeout: 900
+      MemorySize: 1024
+      ReservedConcurrentExecutions: 1 # never let two runs overlap
+      Environment:
+        Variables:
+          EMAIL_FROM: !Ref EmailFrom
+          EMAIL_TO: !Ref EmailTo
+          DASHBOARD_URL: !GetAtt DashboardFunctionUrl.FunctionUrl
+          ANTHROPIC_API_KEY_PARAM: !Ref AnthropicKeyParam
+          DECODE_LIMIT: !Ref DecodeLimit
+          DECODE_WEB_SEARCHES: !Ref DecodeWebSearches
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AnthropicKeyParam}
+            - Effect: Allow
+              Action: [ses:SendEmail, ses:SendRawEmail]
+              Resource: "*"
+      Events:
+        Hourly:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref Schedule
+            RetryPolicy:
+              MaximumRetryAttempts: 0
+
+  DashboardFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: jobwatch.handlers.dashboard_handler
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          DASHBOARD_PASSWORD_PARAM: !Ref DashboardPasswordParam
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref JobsTable
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${DashboardPasswordParam}
+      FunctionUrlConfig:
+        AuthType: NONE # the app itself requires the dashboard password
+
+  # Public function URLs also need lambda:InvokeFunction granted via the URL.
+  DashboardInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DashboardFunction
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
+Outputs:
+  DashboardUrl:
+    Description: Open this in a browser and sign in with the dashboard password
+    Value: !GetAtt DashboardFunctionUrl.FunctionUrl
+  JobsTableName:
+    Value: !Ref JobsTable
+  ScrapeFunctionName:
+    Value: !Ref ScrapeFunction

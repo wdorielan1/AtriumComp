@@ -1,0 +1,285 @@
+# Which postings count as a match, and how they are labelled.
+#
+# Matching is case-insensitive on whole words/phrases. A job matches a category
+# when a title keyword hits, or when at least `min_description_hits` description
+# keywords hit (descriptions are noisy, so titles count more).
+# `fallback: true` categories use broad words ("scientist") and only apply when
+# no other category matched, so a "Clinical Research Associate" is Clinical only.
+#
+# Edit freely; changes apply on the next run.
+
+min_description_hits: 3
+
+categories:
+  Clinical:
+    title:
+      - clinical research
+      - clinical operations
+      - clinical trial
+      - clinical study
+      - clinical project
+      - clinical program
+      - clinical development
+      - clinical scientist
+      - clinical data
+      - clinical supply
+      - CRA
+      - CTA
+      - CTM
+      - CRC
+      - clinical research associate
+      - clinical research coordinator
+      - clinical trial manager
+      - clinical trial associate
+      - study manager
+      - study start-up
+      - site manager
+      - site monitor
+      - monitor
+      - biostatistic
+      - biostatistician
+      - statistical programmer
+      - SAS programmer
+      - data manager
+      - clinical data manager
+      - feasibility
+      - TMF
+    description:
+      - GCP
+      - ICH
+      - clinical trial
+      - protocol
+      - CRO
+      - investigator
+      - site monitoring
+      - phase I
+      - phase II
+      - phase III
+      - IRB
+      - eTMF
+      - EDC
+      - CTMS
+
+  Medical Affairs:
+    title:
+      - medical affairs
+      - medical science liaison
+      - MSL
+      - medical director
+      - medical information
+      - medical communications
+      - medical writer
+      - medical writing
+      - medical monitor
+      - medical advisor
+      - medical lead
+      - field medical
+      - HEOR
+      - health economics
+      - outcomes research
+      - RWE
+      - real world evidence
+      - KOL
+      - scientific communications
+      - publications
+    description:
+      - KOL
+      - key opinion leader
+      - medical affairs
+      - scientific exchange
+      - advisory board
+      - HCP
+      - publication plan
+      - medical strategy
+
+  Regulatory / Quality / PV:
+    title:
+      - regulatory affairs
+      - regulatory
+      - quality assurance
+      - quality control
+      - QA
+      - QC
+      - GMP
+      - GxP
+      - CMC
+      - validation
+      - compliance
+      - pharmacovigilance
+      - drug safety
+      - safety scientist
+      - safety physician
+      - PV
+      - CAPA
+    description:
+      - FDA
+      - EMA
+      - IND
+      - NDA
+      - BLA
+      - 21 CFR
+      - GMP
+      - GLP
+      - deviation
+      - CAPA
+      - audit
+      - pharmacovigilance
+      - adverse event
+
+  Lab / R&D / Manufacturing:
+    fallback: true
+    title:
+      - scientist
+      - research associate
+      - biologist
+      - chemist
+      - immunolog
+      - toxicolog
+      - pharmacolog
+      - DMPK
+      - bioprocess
+      - upstream
+      - downstream
+      - process development
+      - analytical development
+      - formulation
+      - cell therapy
+      - gene therapy
+      - assay
+      - laboratory
+      - lab technician
+      - manufacturing associate
+      - manufacturing technician
+      - biomanufacturing
+      - fill finish
+      - technical operations
+      - tech ops
+      - MSAT
+    description:
+      - HPLC
+      - ELISA
+      - PCR
+      - flow cytometry
+      - cell culture
+      - mass spec
+      - bioreactor
+      - chromatography
+      - assay development
+      - in vivo
+      - in vitro
+      - CRISPR
+      - antibody
+      - biologics
+
+  Commercial (life sciences):
+    fallback: true
+    title:
+      - market access
+      - brand manager
+      - product manager
+      - pharmaceutical sales
+      - specialty sales
+      - oncology sales
+      - account director
+      - territory manager
+      - key account
+      - commercial
+      - launch
+    description:
+      - pharmaceutical
+      - biotech
+      - payer
+      - formulary
+      - launch
+      - oncology
+      - rare disease
+
+# A job only counts if it also looks like life-sciences work. When a title
+# matches a category but nothing below appears anywhere in the posting, it is
+# dropped (filters out e.g. "QA Engineer" at a software company).
+industry_signals:
+  - pharma
+  - pharmaceutical
+  - biotech
+  - biotechnology
+  - biopharma
+  - life science
+  - life sciences
+  - clinical
+  - medical
+  - drug
+  - therapeutic
+  - therapy
+  - oncology
+  - vaccine
+  - biologics
+  - GMP
+  - GCP
+  - FDA
+  - CRO
+  - CDMO
+  - medical device
+  - diagnostics
+  - laboratory
+  - patients
+  - molecule
+
+# Competitors advertise their own internal hiring on the same boards.
+# Postings whose title matches these are skipped.
+exclude_titles:
+  - recruiter
+  - recruitment consultant
+  - recruitment manager
+  - talent acquisition
+  - sourcer
+  - resourcer
+  - business development manager
+  - account manager - staffing
+  - sales recruiter
+  - associate consultant
+  - delivery manager
+
+# Employment-type detection (temp vs direct hire). Structured data from the
+# site (JSON-LD employmentType) wins when present. Otherwise any
+# Contract-to-hire phrase wins; else the type with the most hits (title hits
+# count 3x) wins. Phrases like "contract research organization" are ignored.
+# Claude double-checks during the decode step.
+employment_types:
+  Contract-to-hire:
+    - contract to hire
+    - contract-to-hire
+    - temp to perm
+    - temp-to-perm
+    - temp to hire
+    - CTH
+    - right to hire
+  Temp / Contract:
+    - contract
+    - contractor
+    - temporary
+    - temp
+    - W2
+    - 1099
+    - C2C
+    - corp to corp
+    - per hour
+    - /hr
+    - hourly
+    - month assignment
+    - months assignment
+    - interim
+    - freelance
+    - consultant role
+  Direct hire:
+    - direct hire
+    - direct-hire
+    - permanent
+    - perm
+    - full-time employee
+    - base salary
+    - annual salary
+    - per year
+    - /yr
+    - bonus
+    - equity
+    - 401k

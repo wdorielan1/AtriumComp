@@ -1,0 +1,117 @@
+# Competitors to watch.
+#
+#   name:        display name (used in email / dashboard)
+#   homepage:    company site. If careers_url is missing, or returns no jobs,
+#                the scraper looks for a "Jobs" / "Careers" link on this page.
+#   careers_url: (optional) the job-listing page, if you know it
+#   type:        (optional) force an adapter: generic | teamtailor | greenhouse |
+#                lever | workable | smartrecruiters | bullhorn | rss
+#   board:       (optional) the account/board id the adapter needs
+#                (e.g. greenhouse board token, teamtailor subdomain)
+#   max_pages:   (optional) how many listing pages to follow (default 5)
+#   enabled:     set false to skip
+#   verify:      true = URL is a best guess; run `python -m jobwatch.cli discover`
+#                to confirm the scraper finds jobs, then fix the URL if needed.
+#
+# Do not add LinkedIn URLs: LinkedIn blocks scraping and its terms forbid it.
+
+competitors:
+  - name: Kennedy Bond
+    homepage: https://www.kennedybond.com/
+
+  - name: EPM Scientific
+    homepage: https://www.epmscientific.com/en-us
+    careers_url: https://www.epmscientific.com/en-us/jobs
+    max_pages: 10
+
+  - name: Penfield Search Partners
+    homepage: https://www.penfieldsearch.com/
+
+  - name: Tandym Group
+    homepage: https://tandymgroup.com/
+    verify: true
+
+  - name: Apex Systems
+    homepage: https://www.apexsystems.com/
+    max_pages: 10
+    verify: true
+
+  - name: Synectics
+    # Was a LinkedIn link in the original list; LinkedIn can't be scraped.
+    homepage: https://www.synecticsinc.com/
+    verify: true
+
+  - name: LHi Group / SciPro
+    homepage: https://www.sciproglobal.com/
+    careers_url: https://www.sciproglobal.com/jobs
+    verify: true
+
+  - name: Carlton National
+    homepage: http://www.carltonnational.com/
+
+  - name: BioTalent
+    homepage: https://www.biotalent.com/
+    careers_url: https://www.biotalent.com/jobs
+
+  - name: HKA Enterprises
+    homepage: https://www.hkaenterprises.com/
+    verify: true
+
+  - name: MSI Pharma
+    homepage: https://www.msipharma.com/
+    verify: true
+
+  - name: GQR
+    homepage: https://www.gqr.com/
+    careers_url: https://www.gqr.com/jobs
+    max_pages: 10
+
+  - name: Sunrise Systems
+    homepage: https://www.sunrisesys.com/
+
+  - name: Meet Life Sciences
+    homepage: https://www.meetlifesciences.com/
+    careers_url: https://www.meetlifesciences.com/jobs
+
+  - name: Dynamic Talent Solutions
+    homepage: https://www.dynamictalentsolutions.com/
+
+  - name: US Tech Solutions
+    homepage: https://ustechsolutions.com/
+
+  - name: Collabera
+    homepage: https://collabera.com/
+    max_pages: 10
+
+  - name: SelectSource International
+    homepage: https://selectsourceintl.com/
+
+  - name: Howard Sloan
+    homepage: https://www.howardsloan.com/
+
+  - name: SRG
+    homepage: https://www.srg-us.com/
+    careers_url: https://jobs.srg-us.com/index.smpl
+
+  - name: Creative Alignments
+    homepage: https://www.creativealignments.com/
+
+  - name: eTeam
+    homepage: https://www.eteaminc.com/
+
+  - name: Beacon Hill
+    homepage: https://www.beaconhillstaffing.com/
+    max_pages: 10
+    verify: true
+
+  - name: The Fountain Group
+    homepage: https://www.thefountaingroup.com/
+
+  - name: Novaris Search
+    # Couldn't find this firm's website; add homepage and set enabled: true.
+    homepage: ""
+    enabled: false
+
+  - name: JCW Life Sciences
+    homepage: https://www.jcwsearch.com/
+    verify: true
