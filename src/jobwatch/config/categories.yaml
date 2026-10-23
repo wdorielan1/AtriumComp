@@ -1,4 +1,5 @@
-# Which postings count as a match, and how they are labelled.
+# Which postings count as a match, how they are labelled, and which ones Claude
+# decodes automatically.
 #
 # Matching is case-insensitive on whole words/phrases. A job matches a category
 # when a title keyword hits, or when at least `min_description_hits` description
@@ -283,3 +284,15 @@ employment_types:
     - bonus
     - equity
     - 401k
+
+# Which matching postings Claude decodes automatically (decoding is what costs
+# money). A posting is auto-decoded only if it passes every list below; an
+# empty list means "any". Everything else can be decoded on demand with the
+# "Decode" button on the dashboard.
+#   employment_types: Direct hire | Contract-to-hire | Temp / Contract | Unknown
+#   categories:       names from the categories section above
+#   competitors:      names from competitors.yaml
+auto_decode:
+  employment_types: [Direct hire]
+  categories: [Clinical, Medical Affairs]
+  competitors: []

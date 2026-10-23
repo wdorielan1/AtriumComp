@@ -11,32 +11,51 @@ New matches arrive by **email**, and everything is browsable on a password-prote
 EventBridge (hourly) ─► Scrape Lambda ─► competitor sites (public pages, robots.txt respected)
                               │
                               ├─ classify: category + temp vs direct (keyword rules you can edit)
-                              ├─ decode: Claude + web search + ClinicalTrials.gov ─► likely client
+                              ├─ decode (only postings you choose): Claude + web search + ClinicalTrials.gov
+                              ├─ your prospects' / clients' own careers pages (optional)
                               ├─ DynamoDB (remembers every job, so nothing is processed twice)
                               └─ SES email digest of NEW matches
-Dashboard Lambda (Function URL, password) ─► Jobs · Clients · Sources tabs, CSV export
+Dashboard Lambda (Function URL, password) ─► Jobs · Competitor clients · Prospects & Clients · Sources,
+                                             on-demand "Decode" button, CSV export
 ```
 
 ## What you get
 
-**Email** (only when something new appears): grouped into Direct hire, Contract-to-hire and
-Temp / Contract, with role, competitor, location, category, and the likely client with a
-confidence level.
+**Email** (only when something new appears): new postings at **your prospects and clients**
+first, then competitor postings grouped into Direct hire, Contract-to-hire and Temp / Contract.
+Each row shows role, competitor, location, category, **when it was posted and how long it has been
+up**, and the likely client with a confidence level.
 
 **Dashboard**
-- **Jobs**: every matching posting, with filters for competitor, employment type, category,
-  client confidence, and "still posted" vs. new in the last 7/30 days. Click a likely client to
-  see the evidence, alternative candidates, and source links.
-- **Clients**: the decoded companies ranked by number of postings, showing which competitors
-  recruit for each one and the temp/direct split. This tab answers "who is each competitor working with?"
-- **Sources**: per-competitor health: jobs found on the site, matches, and errors. Use it to spot a
-  competitor whose site changed.
+- **Jobs**: every matching competitor posting, with its posted date and how long it has been up
+  ("up 12 days"; amber once a role has been open 30+ days). Filters cover competitor, employment
+  type, category, client confidence, and still-posted vs. posted in the last 7/30 days. Click a likely
+  client to see the evidence, alternatives and sources, or click **Decode** on any posting that
+  hasn't been decoded.
+- **Competitor clients**: the companies your competitors appear to recruit for, ranked by number of
+  postings, with which competitors and the temp/direct split. **+ Prospect** adds one to your list.
+- **Prospects & Clients**: the companies *you* track, marked Prospect or Current client. For each
+  one you see the open postings that relate to it, whether found through competitors (decoded, or
+  the company named in the posting) or on the company's **own careers page**, if you add it.
+  Add, edit, re-mark or remove companies right on this tab.
+- **Sources**: health of every site checked, including jobs found, matches and errors. Use it to spot a
+  site whose layout changed.
 - **Export CSV** of everything.
+
+**Posting dates.** The tool uses the date the site shows ("Oct 20, 2026", "3 days ago", and so on). When
+a site shows no date, it uses the date the tool first saw the posting; hovering over the age shows
+which one was used. Postings that disappear show how long they *were* up.
 
 ## How decoding works
 
+Decoding costs money, so it runs automatically only for postings matching `auto_decode` in
+[`categories.yaml`](src/jobwatch/config/categories.yaml). The default is **Direct hire roles in
+Clinical or Medical Affairs**. Any other posting has a **Decode** button on the dashboard; one click
+decodes it in about a minute, and the result is saved, so a second click costs nothing.
+Postings from your prospects' own careers pages are never decoded, since the company is already known.
+
 Agencies hide the client's name, but postings leak clues: the suburb, the therapeutic area, the
-phase, "recently raised a $150M Series C", "two approved products". For each new matching posting,
+phase, "recently raised a $150M Series C", "two approved products". For each decoded posting,
 Claude:
 1. Web-searches the most distinctive sentences. Clients often post the same role on their own
    careers page with near-identical wording, which is the strongest evidence.
@@ -112,8 +131,10 @@ Edit the file on GitHub and commit; it redeploys automatically. Also note:
 | What | Where |
 |---|---|
 | Keywords for each category, internal-recruiter titles to skip, temp/direct phrases | `src/jobwatch/config/categories.yaml` |
+| **Which postings are auto-decoded** (employment types, categories, competitors) | `auto_decode` in `src/jobwatch/config/categories.yaml` |
+| Prospects and current clients | Dashboard → Prospects & Clients |
 | Competitors | `src/jobwatch/config/competitors.yaml` |
-| Decodes per hour (`DecodeLimit`, 0 = off), web searches per decode (`DecodeWebSearches`, 0 = off) | GitHub variables `DECODE_LIMIT` / `DECODE_WEB_SEARCHES`, or `sam deploy` parameters |
+| Max auto-decodes per hour (`DecodeLimit`, 0 = only the Decode button), web searches per decode (`DecodeWebSearches`, 0 = off) | GitHub variables `DECODE_LIMIT` / `DECODE_WEB_SEARCHES`, or `sam deploy` parameters |
 | Schedule | `Schedule` parameter in `template.yaml` (default `rate(1 hour)`) |
 | Claude model / effort | `DECODE_MODEL` (default `claude-opus-5-5`), `DECODE_EFFORT` (default `medium`) env vars on the scrape function |
 
@@ -124,9 +145,10 @@ Edit the file on GitHub and commit; it redeploys automatically. Also note:
 | Lambda, DynamoDB, SES | usually a few $/month (mostly within the free tier) |
 | Claude decoding, with web search | roughly **$0.10–0.25 per decoded posting** |
 
-At 30 new matching postings a day, decoding is about $3–8/day. The first-run backlog is capped by
-`DecodeLimit` (25 per hour, so at most about 600 decodes/day). Set `DECODE_WEB_SEARCHES` to `0` to cut
-the cost a lot (lower accuracy), or `DECODE_LIMIT` to `0` to turn decoding off.
+You pay only for postings that are decoded: the ones matching `auto_decode`, plus any you click
+**Decode** on. Scraping frequency barely matters, because each posting is decoded at most once. To spend
+less, narrow `auto_decode`, set `DECODE_WEB_SEARCHES` to `0` (much cheaper, less accurate), or set
+`DECODE_LIMIT` to `0` and decode only by clicking.
 
 ## Running locally
 

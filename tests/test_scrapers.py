@@ -104,3 +104,12 @@ def test_ats_detect_signatures():
     assert ats.detect("https://apply.workable.com/meet-ls/") == ("workable", "meet-ls")
     assert ats.detect("https://public-rest33.bullhornstaffing.com:443/rest-services/XyZ/") == ("bullhorn", "33:XyZ")
     assert ats.detect("<html>nothing here</html>") is None
+
+
+def test_enrich_finds_posted_text(web):
+    url = "https://x.com/job/qa/1"
+    web.pages[url] = "<html><body><main><h1>QA Specialist</h1><p>Date Posted: Oct 14, 2026</p>" + "<p>GMP work</p>" * 50 + "</main></body></html>"
+    from jobwatch.models import Job
+    assert enrich(Job(competitor="X", title="QA Specialist", url=url)).posted == "Oct 14, 2026"
+    web.pages[url] = "<html><body><span>Posted 3 days ago</span></body></html>"
+    assert enrich(Job(competitor="X", title="QA Specialist", url=url)).posted == "3 days ago"

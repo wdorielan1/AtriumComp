@@ -2,7 +2,8 @@
 
 Every job ever seen is remembered (so it is fetched/decoded only once); only
 matched life-science jobs keep full details and get `last_seen` refreshed.
-Per-competitor run stats are stored under keys starting with "__run__#".
+Per-competitor run stats are stored under keys starting with "__run__#", and
+the prospects/clients watchlist under "__watch__#".
 """
 
 from __future__ import annotations
@@ -17,6 +18,11 @@ from .config import env
 from .models import Job
 
 RUN_PREFIX = "__run__#"
+WATCH_PREFIX = "__watch__#"
+
+
+def _watch_key(name: str) -> str:
+    return WATCH_PREFIX + name.strip().lower()
 
 
 def _to_dynamo(obj: Any) -> Any:
@@ -72,6 +78,10 @@ class DynamoStore:
         from boto3.dynamodb.conditions import Attr
         return {i["job_id"] for i in self._scan(ProjectionExpression="job_id", FilterExpression=Attr("matched").eq(True))}
 
+    def get_job(self, job_id: str) -> dict | None:
+        item = self.table.get_item(Key={"job_id": job_id}).get("Item")
+        return _from_dynamo(item) if item else None
+
     def matched_jobs(self) -> list[dict]:
         from boto3.dynamodb.conditions import Attr
         return [_from_dynamo(i) for i in self._scan(FilterExpression=Attr("matched").eq(True))]
@@ -82,6 +92,16 @@ class DynamoStore:
     def runs(self) -> list[dict]:
         from boto3.dynamodb.conditions import Attr
         return [_from_dynamo(i) for i in self._scan(FilterExpression=Attr("job_id").begins_with(RUN_PREFIX))]
+
+    def watchlist(self) -> list[dict]:
+        from boto3.dynamodb.conditions import Attr
+        return [_from_dynamo(i) for i in self._scan(FilterExpression=Attr("job_id").begins_with(WATCH_PREFIX))]
+
+    def save_watch(self, item: dict) -> None:
+        self.table.put_item(Item=_to_dynamo({**item, "job_id": _watch_key(item["name"])}))
+
+    def delete_watch(self, name: str) -> None:
+        self.table.delete_item(Key={"job_id": _watch_key(name)})
 
 
 class FileStore:
@@ -97,7 +117,7 @@ class FileStore:
         self.path.write_text(json.dumps(self.data, indent=1))
 
     def known_ids(self) -> set[str]:
-        return {k for k in self.data if not k.startswith(RUN_PREFIX)}
+        return {k for k in self.data if not k.startswith("__")}
 
     def save(self, job: Job, matched: bool) -> None:
         with self._lock:
@@ -116,6 +136,9 @@ class FileStore:
     def matched_ids(self) -> set[str]:
         return {k for k, v in self.data.items() if v.get("matched")}
 
+    def get_job(self, job_id: str) -> dict | None:
+        return self.data.get(job_id)
+
     def matched_jobs(self) -> list[dict]:
         return [v for v in self.data.values() if v.get("matched")]
 
@@ -126,6 +149,19 @@ class FileStore:
 
     def runs(self) -> list[dict]:
         return [v for k, v in self.data.items() if k.startswith(RUN_PREFIX)]
+
+    def watchlist(self) -> list[dict]:
+        return [v for k, v in self.data.items() if k.startswith(WATCH_PREFIX)]
+
+    def save_watch(self, item: dict) -> None:
+        with self._lock:
+            self.data[_watch_key(item["name"])] = {**item, "job_id": _watch_key(item["name"])}
+            self._flush()
+
+    def delete_watch(self, name: str) -> None:
+        with self._lock:
+            self.data.pop(_watch_key(name), None)
+            self._flush()
 
 
 def get_store():

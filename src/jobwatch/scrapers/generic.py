@@ -34,6 +34,10 @@ DETAIL_HREF_WEAK = re.compile(r"/(jobs|positions|openings|vacancies|careers|oppo
 NAV_TEXT = re.compile(r"^(view|see|search|browse|all|apply|read more|learn more|more|details|jobs?|careers?|"
                       r"next|previous|prev|login|sign in|register|submit|upload|home|contact|about|share|save)\b", re.I)
 NEXT_TEXT = re.compile(r"^(next|next page|›|»|>|older)$", re.I)
+POSTED_TEXT = re.compile(r"(?i)\b(?:date posted|posted(?: on)?|published(?: on)?|listed(?: on)?)\s*[:\-]?\s*"
+                         r"((?:\d+\+?\s*(?:minute|hour|day|week|month)s?\s+ago)|today|yesterday|"
+                         r"\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4}|"
+                         r"[A-Z][a-z]{2,8}\.? \d{1,2}(?:st|nd|rd|th)?,? \d{4}|\d{1,2}(?:st|nd|rd|th)? [A-Z][a-z]{2,8} \d{4})")
 TEAMTAILOR = re.compile(r"https?://([A-Za-z0-9-]+)\.teamtailor\.com")
 
 
@@ -205,4 +209,8 @@ def enrich(job: Job) -> Job:
         text = main_text(r.text)
         if len(text) > len(job.description):
             job.description = text
+    if not job.posted:
+        m = POSTED_TEXT.search(soup(r.text).get_text(" "))
+        if m:
+            job.posted = clean(m.group(1))
     return job

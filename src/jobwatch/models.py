@@ -19,12 +19,14 @@ class Job:
     employment_type_raw: str = ""  # what the site itself says, e.g. JSON-LD "CONTRACTOR"
     ref: str = ""  # site's own job reference/id, if any
     source: str = ""  # which adapter found it
+    direct: bool = False  # True = from a watched company's own careers page (not a competitor)
 
     # Filled in by the pipeline
     categories: list[str] = field(default_factory=list)
     employment_type: str = "Unknown"  # Temp / Contract | Contract-to-hire | Direct hire | Unknown
     first_seen: str = ""
     last_seen: str = ""
+    posted_date: str = ""  # ISO date the posting went up: site's date if usable, else first_seen
     decode: dict[str, Any] | None = None
 
     @property

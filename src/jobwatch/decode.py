@@ -143,6 +143,16 @@ def _run_tool(name: str, args: dict) -> str:
     return json.dumps({"error": f"unknown tool {name}"})
 
 
+def decode_and_apply(job: Job) -> dict | None:
+    """Decode a job and copy the result onto it (fills employment type if keywords couldn't tell)."""
+    result = decode_job(job)
+    if result:
+        job.decode = result
+        if job.employment_type == UNKNOWN and result.get("employment_type") not in (None, UNKNOWN):
+            job.employment_type = result["employment_type"]
+    return result
+
+
 def decode_job(job: Job) -> dict | None:
     tools: list[dict] = [TRIALS_TOOL]
     if WEB_SEARCHES > 0:

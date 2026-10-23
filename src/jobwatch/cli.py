@@ -85,6 +85,7 @@ def cmd_serve(args) -> None:
                 "rawPath": urlparse(self.path).path,
                 "requestContext": {"http": {"method": method}},
                 "cookies": [c.strip() for c in (self.headers.get("Cookie") or "").split(";") if c.strip()],
+                "headers": {k.lower(): v for k, v in self.headers.items()},
                 "body": self.rfile.read(n).decode() if n else "",
             }
             r = dashboard.handler(event)

@@ -32,7 +32,7 @@ def two_competitors(monkeypatch):
 
 def test_run_twice_only_reports_new(monkeypatch, two_competitors):
     sent = []
-    monkeypatch.setattr(notify, "send_digest", lambda jobs, stats, first_run=False: sent.append((jobs, first_run)))
+    monkeypatch.setattr(notify, "send_digest", lambda jobs, stats, first_run=False, watchlist=None: sent.append((jobs, first_run)))
     monkeypatch.setattr(scrapers, "scrape", lambda c: _jobs(c.name))
     monkeypatch.setattr(scrapers, "enrich", lambda j: j)
 
@@ -127,17 +127,31 @@ def test_decode_refusal_returns_none(monkeypatch):
     assert decode.decode_job(Job(competitor="x", title="t", url="u")) is None
 
 
-def test_decode_backlog_fills_employment_type(monkeypatch, two_competitors):
+def test_only_auto_decode_postings_are_decoded(monkeypatch, two_competitors):
+    """Default rule: Direct hire + (Clinical or Medical Affairs). Everything else waits for the Decode button."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
     monkeypatch.setattr(notify, "send_digest", lambda *a, **k: None)
-    monkeypatch.setattr(scrapers, "scrape", lambda c: [Job(competitor=c.name, title="Clinical Research Associate",
-                                                           url=f"https://{c.name}/j", description="biotech CRA " * 30)])
-    monkeypatch.setattr(decode, "decode_job", lambda job: {"client_guess": "Acme Bio", "confidence": "low",
-                                                           "employment_type": "Contract-to-hire"})
+    monkeypatch.setattr(scrapers, "scrape", lambda c: _jobs(c.name, [
+        Job(competitor=c.name, title="Clinical Research Associate", url=f"https://{c.name}/j",
+            description="Direct hire, permanent. Biotech CRA. " * 10)]) if c.name == "alpha" else [])
+    decoded = []
+
+    def fake(job):
+        decoded.append(job.title)
+        return {"client_guess": "Acme Bio", "confidence": "low", "employment_type": "Direct hire"}
+    monkeypatch.setattr(decode, "decode_job", fake)
     pipeline.run()
-    jobs = get_store().matched_jobs()
-    assert all(j["decode"]["client_guess"] == "Acme Bio" for j in jobs)
-    assert all(j["employment_type"] == "Contract-to-hire" for j in jobs)
+    # CRA (direct, clinical) and MSL (direct, medical affairs) qualify; the contract CTM does not.
+    assert sorted(decoded) == ["Clinical Research Associate", "Medical Science Liaison"]
+    by_title = {j["title"]: j for j in get_store().matched_jobs()}
+    assert by_title["Clinical Trial Manager"].get("decode") is None
+
+
+def test_decode_fills_unknown_employment_type(monkeypatch):
+    monkeypatch.setattr(decode, "decode_job", lambda job: {"client_guess": "X", "employment_type": "Contract-to-hire"})
+    job = Job(competitor="a", title="CRA", url="u")
+    decode.decode_and_apply(job)
+    assert job.employment_type == "Contract-to-hire" and job.decode["client_guess"] == "X"
 
 
 # --- dashboard ----------------------------------------------------------------
@@ -156,8 +170,42 @@ def test_dashboard_requires_password(monkeypatch):
     assert ok["statusCode"] == 302
     cookie = ok["cookies"][0].split(";")[0]
     data = dashboard.handler(_req("/api/data", cookies=[cookie]))
-    assert data["statusCode"] == 200 and json.loads(data["body"]) == {"jobs": [], "runs": []}
+    assert data["statusCode"] == 200 and json.loads(data["body"]) == {"jobs": [], "runs": [], "watchlist": []}
     assert "Competitor Job Watch" in dashboard.handler(_req("/", cookies=[cookie]))["body"]
+
+
+def _login(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pw")
+    ok = dashboard.handler(_req("/login", "POST", body="password=pw"))
+    return [ok["cookies"][0].split(";")[0]]
+
+
+def _post_json(path, payload, cookies, ctype="application/json"):
+    e = _req(path, "POST", cookies=cookies, body=json.dumps(payload))
+    e["headers"] = {"Content-Type": ctype}
+    return dashboard.handler(e)
+
+
+def test_dashboard_decode_button(monkeypatch):
+    cookies = _login(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    job = Job(competitor="a", title="QA Specialist", url="https://a/1", categories=["Regulatory / Quality / PV"],
+              employment_type="Temp / Contract", description="GMP", first_seen="2099-01-01")
+    get_store().save(job, matched=True)
+    calls = []
+    monkeypatch.setattr(decode, "decode_job", lambda j: calls.append(j.description) or
+                        {"client_guess": "Moderna", "confidence": "medium", "employment_type": "Temp / Contract"})
+
+    listed = json.loads(dashboard.handler(_req("/api/data", cookies=cookies))["body"])["jobs"][0]
+    assert listed["auto_decode"] is False and "description" not in listed
+
+    assert _post_json("/api/decode", {"job_id": job.job_id}, cookies, ctype="text/plain")["statusCode"] == 415
+    r = _post_json("/api/decode", {"job_id": job.job_id}, cookies)
+    assert r["statusCode"] == 200 and json.loads(r["body"])["decode"]["client_guess"] == "Moderna"
+    assert calls == ["GMP"]  # full description was sent to Claude
+    _post_json("/api/decode", {"job_id": job.job_id}, cookies)
+    assert len(calls) == 1  # second click reuses the saved result
+    assert _post_json("/api/decode", {"job_id": "nope"}, cookies)["statusCode"] == 404
 
 
 def test_dashboard_refuses_without_configured_password():
@@ -169,3 +217,71 @@ def test_shipped_config_loads():
     names = [c.name for c in config.load_competitors()]
     assert "EPM Scientific" in names and "Novaris Search" in names
     assert len(names) == len(set(names))
+
+
+# --- prospects & clients watchlist ---------------------------------------------
+
+from jobwatch import watch  # noqa: E402
+
+
+def test_watch_link_matching():
+    wl = [{"name": "Vertex", "status": "prospect"}, {"name": "Bristol Myers Squibb", "aliases": ["BMS"], "status": "client"},
+          {"name": "Ionis", "status": "prospect"}]
+    decoded = {"decode": {"client_guess": "Vertex Pharmaceuticals Inc.", "confidence": "medium",
+                          "alternatives": [{"name": "Bristol-Myers Squibb Company", "why": "x"}]}}
+    assert watch.link(decoded, wl) == ["Vertex", "Bristol Myers Squibb"]
+    assert watch.link({"description": "Partnering with BMS on a cell therapy program"}, wl) == ["Bristol Myers Squibb"]
+    assert watch.link({"decode": {"client_guess": "Ionis", "confidence": "none"}}, wl) == []  # no-confidence ignored
+    assert watch.link({"description": "vertices of a graph"}, wl) == []
+    assert watch.link({"direct": True, "competitor": "Ionis"}, wl) == ["Ionis"]
+
+
+def test_watchlist_api_and_direct_scraping(monkeypatch, two_competitors):
+    cookies = _login(monkeypatch)
+    r = _post_json("/api/watchlist", {"name": "Ionis", "status": "prospect", "careers_url": "https://ionis.com/careers",
+                                      "aliases": "Ionis Pharmaceuticals, Akcea"}, cookies)
+    assert r["statusCode"] == 200
+    assert json.loads(r["body"])["watchlist"][0]["aliases"] == ["Ionis Pharmaceuticals", "Akcea"]
+    assert _post_json("/api/watchlist", {"name": "", "status": "prospect"}, cookies)["statusCode"] == 400
+    assert _post_json("/api/watchlist", {"name": "X", "status": "prospect", "careers_url": "javascript:alert(1)"},
+                      cookies)["statusCode"] == 400
+    _post_json("/api/watchlist", {"name": "Moderna", "status": "client"}, cookies)
+
+    def scrape(c):
+        if c.name == "Ionis":  # the prospect's own careers page
+            return [Job(competitor="Ionis", title="Clinical Trial Manager", url="https://ionis.com/j/1",
+                        description="Direct hire. Antisense oligonucleotide phase 3 clinical trial management. " * 4)]
+        if c.name == "alpha":
+            return [Job(competitor="alpha", title="Medical Science Liaison", url="https://alpha/j/2",
+                        description="Our client Moderna seeks a permanent MSL, base salary + bonus, pharma. " * 4)]
+        return []
+    monkeypatch.setattr(scrapers, "scrape", scrape)
+    sent = []
+    monkeypatch.setattr(notify, "send_digest", lambda jobs, stats, first_run=False, watchlist=None:
+                        sent.append(notify.render_digest(jobs, stats, first_run, watchlist)))
+    pipeline.run()
+
+    data = json.loads(dashboard.handler(_req("/api/data", cookies=cookies))["body"])
+    by_title = {j["title"]: j for j in data["jobs"]}
+    assert by_title["Clinical Trial Manager"]["direct"] is True and by_title["Clinical Trial Manager"]["watch"] == ["Ionis"]
+    assert by_title["Clinical Trial Manager"]["auto_decode"] is False  # client already known, never decoded
+    assert by_title["Medical Science Liaison"]["watch"] == ["Moderna"]
+    subject, body = sent[0]
+    assert subject.startswith("[JobWatch] 2 at your prospects/clients")
+    assert "Their own careers site" in body and "Current client" in body
+    assert "1 new matching competitor postings" in body  # Ionis' own posting isn't counted as a competitor posting
+
+    _post_json("/api/watchlist/delete", {"name": "Ionis"}, cookies)
+    assert [w["name"] for w in get_store().watchlist()] == ["Moderna"]
+
+
+def test_dashboard_script_is_valid_js(tmp_path):
+    """Catches quoting slips in the inline script (Python string escapes)."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    js = tmp_path / "d.js"
+    js.write_text(dashboard.DASHBOARD_HTML.split("<script>")[1].split("</script>")[0])
+    assert subprocess.run([node, "--check", str(js)], capture_output=True).returncode == 0

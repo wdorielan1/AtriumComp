@@ -37,3 +37,43 @@ def test_categorize(title, desc, expected):
 ])
 def test_employment_type(job, expected):
     assert employment_type(job) == expected
+
+
+from datetime import date  # noqa: E402
+
+from jobwatch.dates import normalize_date, posted_date  # noqa: E402
+
+TODAY = date(2026, 10, 23)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("2026-10-20", "2026-10-20"),
+    ("2026-10-20T14:03:00Z", "2026-10-20"),
+    ("Tue, 20 Oct 2026 14:00:00 GMT", "2026-10-20"),
+    ("10/20/2026", "2026-10-20"),
+    ("Posted: Oct 20, 2026", "2026-10-20"),
+    ("20th October 2026", "2026-10-20"),
+    ("Posted today", "2026-10-23"),
+    ("5 hours ago", "2026-10-23"),
+    ("yesterday", "2026-10-22"),
+    ("3 days ago", "2026-10-20"),
+    ("30+ days ago", "2026-09-23"),
+    ("2 weeks ago", "2026-10-09"),
+    ("2031-01-01", ""),  # future: ignored
+    ("not a date", ""),
+])
+def test_normalize_date(raw, expected):
+    assert normalize_date(raw, TODAY) == expected
+
+
+def test_posted_date_falls_back_to_first_seen():
+    assert posted_date("3 days ago", "2026-10-23T10:00:00+00:00") == "2026-10-20"
+    assert posted_date("", "2026-10-23T10:00:00+00:00") == "2026-10-23"
+    assert posted_date("2026-11-30", "2026-10-23T10:00:00+00:00") == "2026-10-23"
+
+
+def test_age_label():
+    from jobwatch.dates import age_label
+    assert age_label("2026-10-20", TODAY) == "Posted Oct 20, 2026 · up 3 days"
+    assert age_label("2026-10-23", TODAY) == "Posted Oct 23, 2026 · posted today"
+    assert age_label("", TODAY) == ""

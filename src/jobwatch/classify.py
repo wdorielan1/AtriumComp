@@ -92,6 +92,16 @@ def employment_type(job: Job) -> str:
     return UNKNOWN
 
 
+def auto_decode(job: Job) -> bool:
+    """Whether this matched posting should be decoded automatically (see auto_decode in categories.yaml)."""
+    rule = load_categories().get("auto_decode") or {}
+    types, cats, comps = (rule.get(k) or [] for k in ("employment_types", "categories", "competitors"))
+    return bool(job.categories) and not job.direct \
+        and (not types or job.employment_type in types) \
+        and (not cats or any(c in cats for c in job.categories)) \
+        and (not comps or job.competitor in comps)
+
+
 def classify(job: Job) -> Job:
     job.categories = categorize(job)
     job.employment_type = employment_type(job)
