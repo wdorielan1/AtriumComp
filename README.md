@@ -134,7 +134,7 @@ You don't need to edit any files for this. Use the dashboard:
 |---|---|---|
 | Add one competitor | **Competitors** | Type the name and website (`kornferry.com` is fine). The jobs page is found automatically; add it only if the tool can't find it. |
 | Add many competitors | **Competitors** → *Import a list* | Paste lines like `Name, website` (or copy two columns from Excel/Google Sheets), or upload a CSV. |
-| Track a suggested competitor | **Competitors** | Life-science firms I'd suggest are listed greyed out. Click **Add**. |
+| Track a suggested competitor | **Competitors** | Entries marked `suggested: true` (with `enabled: false`) in `competitors.yaml` show greyed out. Click **Add**. |
 | Pause or remove one | **Competitors** | **Pause** keeps it listed and stops checking it; **Remove** (only for ones you added) deletes it. |
 | Add one prospect or client | **Prospects & Clients** | Type the name, choose Prospect or Current client, and optionally paste their careers page. |
 | Add many prospects/clients | **Prospects & Clients** → *Import a list* | Paste `Name, careers page, prospect/client`, or copy columns from a spreadsheet. A header row is fine. Names already tracked are skipped. |

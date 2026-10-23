@@ -253,9 +253,11 @@ def test_shipped_config_loads():
     allc = [c for c in config.builtin_competitors()]
     assert {"EPM Scientific", "Novaris Search", "Korn Ferry"} <= set(on)
     assert len({c.name for c in allc}) == len(allc)
-    # suggested life-science competitors ship switched off
-    suggested = [c for c in allc if c.extra.get("suggested")]
-    assert suggested and all(not c.enabled for c in suggested) and not {c.name for c in suggested} & set(on)
+    # the life-science competitors added after the first list are all switched on
+    added_later = {"Planet Pharma", "Actalent", "Kelly Science & Clinical", "Advanced Clinical", "Proclinical",
+                   "Barrington James", "Klein Hersh", "Slone Partners", "Coulter Partners", "True Search", "WittKieffer"}
+    assert added_later <= set(on)
+    assert all(c.homepage.startswith(("http://", "https://")) for c in allc if c.enabled)
 
 
 def test_dashboard_script_is_valid_js(tmp_path):
@@ -280,6 +282,11 @@ def test_dashboard_source_has_no_invalid_escapes():
 
 def test_competitors_add_pause_import_delete(monkeypatch):
     cookies = _login(monkeypatch)
+    # one greyed-out "suggested" entry, to exercise that path (none ship switched off any more)
+    suggested = config.Competitor(name="Planet Pharma", homepage="https://www.planetpharma.com/", enabled=False,
+                                  extra={"suggested": True})
+    others = [c for c in config.builtin_competitors() if c.name != "Planet Pharma"]
+    monkeypatch.setattr(config, "builtin_competitors", lambda: others + [suggested])
 
     def rows():
         data = json.loads(dashboard.handler(_req("/api/data", cookies=cookies))["body"])

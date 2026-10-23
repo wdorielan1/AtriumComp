@@ -12,9 +12,8 @@
 #   enabled:     set false to skip
 #   verify:      true = URL is a best guess; run `python -m jobwatch.cli discover`
 #                to confirm the scraper finds jobs, then fix the URL if needed.
-#   suggested:   true (with enabled: false) = a life-science competitor worth tracking
-#                that isn't switched on yet. It shows up on the dashboard's
-#                Competitors tab with an "Add" button.
+#   suggested:   true (with enabled: false) = listed on the dashboard's Competitors tab,
+#                greyed out with an "Add" button, but not tracked until you add it.
 #
 # You don't have to edit this file to add or pause competitors: use the dashboard's
 # Competitors tab. This file is the starting list.
@@ -125,70 +124,49 @@ competitors:
     homepage: https://www.jcwsearch.com/
     verify: true
 
-# --- Suggested life-science competitors (switched off; add them from the dashboard) ---
-# Addresses are best guesses from memory and unverified; check the Competitors tab after adding.
+# --- Life-science competitors ---
+# Addresses are best guesses from memory and unverified; check the Competitors tab after the first run
+# and fix any that show "No jobs read" (Edit, then paste the jobs page).
   - name: Planet Pharma
     homepage: https://www.planetpharma.com/
-    enabled: false
-    suggested: true
     verify: true
 
   - name: Actalent
     homepage: https://www.actalentservices.com/
-    enabled: false
-    suggested: true
     verify: true
 
   - name: Kelly Science & Clinical
     homepage: https://www.kellyservices.com/us/
-    enabled: false
-    suggested: true
     verify: true
 
   - name: Advanced Clinical
     homepage: https://www.advancedclinical.com/
-    enabled: false
-    suggested: true
     verify: true
 
   - name: Proclinical
     homepage: https://www.proclinical.com/
-    enabled: false
-    suggested: true
     verify: true
 
   - name: Barrington James
     homepage: https://www.barringtonjames.com/
-    enabled: false
-    suggested: true
     verify: true
 
   - name: Klein Hersh
     homepage: https://www.kleinhersh.com/
-    enabled: false
-    suggested: true
     verify: true
 
   - name: Slone Partners
     homepage: https://www.slonepartners.com/
-    enabled: false
-    suggested: true
     verify: true
 
   - name: Coulter Partners
     homepage: https://www.coulterpartners.com/
-    enabled: false
-    suggested: true
     verify: true
 
   - name: True Search
     homepage: https://www.truesearch.com/
-    enabled: false
-    suggested: true
     verify: true
 
   - name: WittKieffer
     homepage: https://www.wittkieffer.com/
-    enabled: false
-    suggested: true
     verify: true
