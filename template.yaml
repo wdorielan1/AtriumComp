@@ -28,6 +28,13 @@ Parameters:
     Description: >
       Max postings auto-decoded by Claude per run (only those matching auto_decode in categories.yaml;
       backlog drains over later runs). 0 disables auto-decoding; the dashboard's Decode button still works.
+  DecodeModel:
+    Type: String
+    Default: claude-haiku-5-5
+    AllowedValues: [claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5]
+    Description: >
+      Claude model for decoding. Start with Haiku (cheapest); switch to Sonnet if the dashboard's
+      decode accuracy is too low, or Opus for the best results.
   DecodeWebSearches:
     Type: Number
     Default: 4
@@ -73,6 +80,7 @@ Resources:
           ANTHROPIC_API_KEY_PARAM: !Ref AnthropicKeyParam
           DECODE_LIMIT: !Ref DecodeLimit
           DECODE_WEB_SEARCHES: !Ref DecodeWebSearches
+          DECODE_MODEL: !Ref DecodeModel
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref JobsTable
@@ -102,6 +110,7 @@ Resources:
           DASHBOARD_PASSWORD_PARAM: !Ref DashboardPasswordParam
           ANTHROPIC_API_KEY_PARAM: !Ref AnthropicKeyParam
           DECODE_WEB_SEARCHES: !Ref DecodeWebSearches
+          DECODE_MODEL: !Ref DecodeModel
       Policies:
         - DynamoDBCrudPolicy: # saves decodes and the prospects/clients list
             TableName: !Ref JobsTable

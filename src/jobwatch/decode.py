@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import date
 
 import anthropic
 
@@ -21,7 +22,11 @@ from .models import Job
 
 log = logging.getLogger(__name__)
 
-MODEL = env("DECODE_MODEL", "claude-opus-5-5")
+# Start cheap (Haiku 5.5); switch to claude-sonnet-5-5 or claude-opus-5-5 if accuracy isn't good enough.
+MODEL = env("DECODE_MODEL", "claude-haiku-5-5")
+# Models with a server-side fallback when a safety classifier declines a request. Haiku 5.5 has none,
+# and sending `fallbacks` to it is pointless (or a 400 for a list), so it's only sent to these.
+_FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
 EFFORT = env("DECODE_EFFORT", "medium")
 WEB_SEARCHES = int(env("DECODE_WEB_SEARCHES", "4"))
 MAX_TURNS = 8
@@ -126,6 +131,7 @@ def enabled() -> bool:
 
 def _prompt(job: Job) -> str:
     return (
+        f"Today's date: {date.today().isoformat()}\n"
         f"Competitor agency: {job.competitor}\n"
         f"Title: {job.title}\n"
         f"Location: {job.location or 'not stated'}\n"
@@ -144,9 +150,13 @@ def _run_tool(name: str, args: dict) -> str:
 
 
 def decode_and_apply(job: Job) -> dict | None:
-    """Decode a job and copy the result onto it (fills employment type if keywords couldn't tell)."""
+    """Decode a job and copy the result onto it (fills employment type if keywords couldn't tell).
+    A re-decode keeps the previous answer and its right/wrong mark under `previous` for comparison."""
+    old = job.decode
     result = decode_job(job)
     if result:
+        if old and old.get("client_guess"):
+            result["previous"] = {k: old.get(k) for k in ("client_guess", "confidence", "model", "feedback")}
         job.decode = result
         if job.employment_type == UNKNOWN and result.get("employment_type") not in (None, UNKNOWN):
             job.employment_type = result["employment_type"]
@@ -160,6 +170,8 @@ def decode_job(job: Job) -> dict | None:
     messages: list[dict] = [{"role": "user", "content": _prompt(job)}]
     client = _anthropic()
 
+    extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"} if MODEL in _FALLBACK_MODELS else {}
+
     for _ in range(MAX_TURNS):
         try:
             resp = client.beta.messages.create(
@@ -169,8 +181,7 @@ def decode_job(job: Job) -> dict | None:
                 messages=messages,
                 tools=tools,
                 output_config={"effort": EFFORT, "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA}},
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
+                **extra,
             )
         except anthropic.RateLimitError as e:
             log.warning("decode rate-limited for %s: %s", job.url, e)
@@ -183,7 +194,8 @@ def decode_job(job: Job) -> dict | None:
             return None
 
         if resp.stop_reason == "refusal":
-            log.warning("decode refused for %s", job.url)
+            category = getattr(getattr(resp, "stop_details", None), "category", None)
+            log.warning("decode refused for %s (category=%s)", job.url, category)
             return None
         messages.append({"role": "assistant", "content": resp.content})
 

@@ -65,6 +65,21 @@ Claude:
 
 Treat **low** guesses as leads, not facts. Results are only as good as the clues in each posting.
 
+### Choosing the model: start cheap, measure, then decide
+
+Decoding starts on **Claude Haiku 5.5**, the cheapest model. Each decoded posting on the dashboard
+shows which model decoded it, with **✓ / ✗** buttons to mark the guess right or wrong. The Jobs tab
+shows the running score per model, e.g. *"72% decodes right · Haiku 5.5 (18/25 checked)"*.
+
+1. Mark 20–30 decodes where you know (or can find out) the real client.
+2. If the score is good enough, stay on Haiku. If not, set the GitHub variable `DECODE_MODEL` to
+   `claude-sonnet-5-5` (or `claude-opus-5-5`) and re-run the deploy workflow.
+3. Use **Re-decode** on the ones Haiku got wrong. The new answer shows next to the old one
+   ("Before: … marked wrong"), and the score tracks the new model separately, so you can compare
+   the two models on the same postings.
+
+Rough cost per 100 decodes with web search: Haiku ~$3–5, Sonnet ~$5–12, Opus ~$10–25.
+
 ## Setup (about 30 minutes)
 
 You need an AWS account, an Anthropic API key, and this GitHub repo.
@@ -91,6 +106,7 @@ Create an IAM user with deploy rights (CloudFormation, Lambda, IAM, DynamoDB, S3
 and an access key, then in the repo go to **Settings → Secrets and variables → Actions**:
 - Secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 - Variables: `EMAIL_FROM`, `EMAIL_TO` (comma-separated), optionally `AWS_REGION` (default `us-east-1`)
+  and `DECODE_MODEL` (default `claude-haiku-5-5`)
 
 Then open **Actions → Test and deploy → Run workflow** (or push to `main`). The log ends with your
 dashboard URL.
@@ -136,14 +152,15 @@ Edit the file on GitHub and commit; it redeploys automatically. Also note:
 | Competitors | `src/jobwatch/config/competitors.yaml` |
 | Max auto-decodes per hour (`DecodeLimit`, 0 = only the Decode button), web searches per decode (`DecodeWebSearches`, 0 = off) | GitHub variables `DECODE_LIMIT` / `DECODE_WEB_SEARCHES`, or `sam deploy` parameters |
 | Schedule | `Schedule` parameter in `template.yaml` (default `rate(1 hour)`) |
-| Claude model / effort | `DECODE_MODEL` (default `claude-opus-5-5`), `DECODE_EFFORT` (default `medium`) env vars on the scrape function |
+| Claude model | GitHub variable `DECODE_MODEL`: `claude-haiku-5-5` (default), `claude-sonnet-5-5` or `claude-opus-5-5` |
+| Decoding effort | `DECODE_EFFORT` env var (default `medium`) |
 
 ## Cost (rough)
 
 | Item | Estimate |
 |---|---|
 | Lambda, DynamoDB, SES | usually a few $/month (mostly within the free tier) |
-| Claude decoding, with web search | roughly **$0.10–0.25 per decoded posting** |
+| Claude decoding, with web search | roughly **$0.03–0.05** per decode on Haiku (default), $0.05–0.12 on Sonnet, $0.10–0.25 on Opus |
 
 You pay only for postings that are decoded: the ones matching `auto_decode`, plus any you click
 **Decode** on. Scraping frequency barely matters, because each posting is decoded at most once. To spend

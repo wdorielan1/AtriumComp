@@ -118,7 +118,21 @@ def test_decode_runs_trials_tool_then_returns_json(monkeypatch):
     assert out["client_guess"] == "Vertex Pharmaceuticals" and out["model"] == "claude-opus-5-5"
     tool_turn = calls[1]["messages"][2]  # user, assistant(tool_use), user(tool_result)
     assert tool_turn["content"][0]["type"] == "tool_result" and "Vertex" in tool_turn["content"][0]["content"]
-    assert calls[0]["fallbacks"] == "default" and calls[0]["output_config"]["format"]["type"] == "json_schema"
+    assert calls[0]["model"] == "claude-haiku-5-5"  # cheapest model is the default
+    assert "fallbacks" not in calls[0]  # Haiku 5.5 has no server-side fallback
+    assert calls[0]["output_config"]["format"]["type"] == "json_schema"
+    assert "Today's date:" in calls[0]["messages"][0]["content"]
+
+
+def test_decode_sends_fallbacks_only_to_models_that_have_them(monkeypatch):
+    monkeypatch.setattr(decode, "MODEL", "claude-sonnet-5-5")
+    calls = []
+    done = SimpleNamespace(stop_reason="end_turn", model="claude-sonnet-5-5",
+                           content=[_block(type="text", text='{"client_guess": "X"}')])
+    monkeypatch.setattr(decode, "_client", SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(
+        create=lambda **kw: calls.append(kw) or done))))
+    decode.decode_job(Job(competitor="x", title="t", url="u"))
+    assert calls[0]["fallbacks"] == "default" and calls[0]["betas"] == ["server-side-fallback-2026-07-01"]
 
 
 def test_decode_refusal_returns_none(monkeypatch):
@@ -206,6 +220,27 @@ def test_dashboard_decode_button(monkeypatch):
     _post_json("/api/decode", {"job_id": job.job_id}, cookies)
     assert len(calls) == 1  # second click reuses the saved result
     assert _post_json("/api/decode", {"job_id": "nope"}, cookies)["statusCode"] == 404
+
+
+def test_feedback_and_redecode(monkeypatch):
+    cookies = _login(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    job = Job(competitor="a", title="CRA", url="https://a/9", categories=["Clinical"], first_seen="2099-01-01",
+              decode={"client_guess": "Acme", "confidence": "low", "model": "claude-haiku-5-5"})
+    get_store().save(job, matched=True)
+
+    r = _post_json("/api/feedback", {"job_id": job.job_id, "verdict": "wrong"}, cookies)
+    assert json.loads(r["body"])["decode"]["feedback"] == "wrong"
+    assert _post_json("/api/feedback", {"job_id": job.job_id, "verdict": "maybe"}, cookies)["statusCode"] == 400
+
+    monkeypatch.setattr(decode, "decode_job", lambda j: {"client_guess": "Moderna", "confidence": "high",
+                                                         "model": "claude-sonnet-5-5"})
+    plain = json.loads(_post_json("/api/decode", {"job_id": job.job_id}, cookies)["body"])
+    assert plain["decode"]["client_guess"] == "Acme"  # no force: existing answer kept, nothing spent
+    forced = json.loads(_post_json("/api/decode", {"job_id": job.job_id, "force": True}, cookies)["body"])
+    assert forced["decode"]["client_guess"] == "Moderna"
+    assert forced["decode"]["previous"] == {"client_guess": "Acme", "confidence": "low",
+                                            "model": "claude-haiku-5-5", "feedback": "wrong"}
 
 
 def test_dashboard_refuses_without_configured_password():

@@ -3,7 +3,8 @@
 Routes: GET /            dashboard (or login form)
         POST /login      password check -> session cookie
         GET /api/data    jobs + run stats as JSON
-        POST /api/decode decode one posting on demand ({"job_id": ...})
+        POST /api/decode decode one posting on demand ({"job_id": ..., "force": true to re-decode})
+        POST /api/feedback mark a decode right/wrong ({"job_id": ..., "verdict": "right"|"wrong"|""})
         POST /api/watchlist         add/update a prospect or current client
         POST /api/watchlist/delete  remove one ({"name": ...})
         GET /export.csv  matched jobs as CSV
@@ -132,24 +133,41 @@ def _delete_watch(event: dict) -> dict:
 
 def _decode_now(event: dict) -> dict:
     """Decode one posting on demand. Runs synchronously (Function URLs allow long requests)."""
-    data, err = _json_body(event)
+    body, err = _json_body(event)
     if err:
         return err
-    if not data.get("job_id"):
-        return _resp(400, '{"error":"job_id required"}', "application/json")
-    job_id = str(data["job_id"])
-
-    store = get_store()
-    data = store.get_job(job_id)
-    if not data or not data.get("matched"):
+    store, job = _load_job(body)
+    if job is None:
         return _resp(404, '{"error":"job not found"}', "application/json")
-    job = Job.from_dict(data)
-    if not job.decode:  # already decoded (e.g. a double click): return it without paying again
+    # Without force, an existing decode (e.g. from a double click) is returned without paying again.
+    if not job.decode or body.get("force"):
         if not decode.enabled():
             return _resp(503, '{"error":"Decoding is not configured (no Anthropic API key)."}', "application/json")
         if not decode.decode_and_apply(job):
             return _resp(502, '{"error":"Decoding failed. Try again in a minute."}', "application/json")
         store.save(job, matched=True)
+    return _resp(200, json.dumps(_prepare(job.to_dict(), store.watchlist())), "application/json")
+
+
+def _load_job(body: dict):
+    store = get_store()
+    data = store.get_job(str(body.get("job_id", "")))
+    return store, (Job.from_dict(data) if data and data.get("matched") else None)
+
+
+def _feedback(event: dict) -> dict:
+    """Mark a decode right or wrong, to measure accuracy per model."""
+    body, err = _json_body(event)
+    if err:
+        return err
+    verdict = body.get("verdict", "")
+    if verdict not in ("right", "wrong", ""):
+        return _resp(400, '{"error":"verdict must be right, wrong or empty"}', "application/json")
+    store, job = _load_job(body)
+    if job is None or not job.decode:
+        return _resp(404, '{"error":"no decode to rate"}', "application/json")
+    job.decode["feedback"] = verdict
+    store.save(job, matched=True)
     return _resp(200, json.dumps(_prepare(job.to_dict(), store.watchlist())), "application/json")
 
 
@@ -192,6 +210,8 @@ def handler(event: dict, context=None) -> dict:
 
     if path == "/api/decode" and method == "POST":
         return _decode_now(event)
+    if path == "/api/feedback" and method == "POST":
+        return _feedback(event)
     if path == "/api/watchlist" and method == "POST":
         return _save_watch(event)
     if path == "/api/watchlist/delete" and method == "POST":
@@ -251,7 +271,9 @@ white-space:nowrap}.t-direct{color:var(--direct)}.t-temp{color:var(--temp)}.t-c2
 .muted{color:var(--muted)}.small{font-size:12px}details summary{cursor:pointer}.closed{opacity:.55}
 button.decode{padding:3px 10px;font-size:12px;border-color:var(--accent);color:var(--accent)}
 button.decode:hover{background:var(--accent);color:#fff}
-.nowrap{white-space:nowrap}.w-client{background:color-mix(in srgb,var(--hi) 18%,transparent);color:var(--hi)}
+.nowrap{white-space:nowrap}.rate{margin-top:4px;color:var(--muted)}
+button.fb{padding:0 7px;font-size:12px;line-height:18px;margin-left:2px}
+button.fb.on-right{background:var(--hi);color:#fff;border-color:var(--hi)}button.fb.on-wrong{background:#cf222e;color:#fff;border-color:#cf222e}.w-client{background:color-mix(in srgb,var(--hi) 18%,transparent);color:var(--hi)}
 .w-prospect{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
 button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
 .seg{display:flex;gap:4px;margin-bottom:10px}.seg button{border:0;background:none;color:var(--muted);padding:4px 10px;border-radius:6px}
@@ -294,9 +316,15 @@ const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=
 let DATA={jobs:[],runs:[],watchlist:[]}, TAB='jobs', SORT={k:'posted',d:-1}, BUSY=new Set(), ERRS={}, ACCT='';
 const post=async(url,body)=>{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(r.status===401){location.reload();throw new Error('Signed out')}const out=await r.json();if(!r.ok)throw new Error(out.error||'Request failed');return out};
-async function decodeNow(id){BUSY.add(id);delete ERRS[id];render();
-  try{const out=await post('/api/decode',{job_id:id});const i=DATA.jobs.findIndex(j=>j.job_id===id);if(i>=0)DATA.jobs[i]=out}
+const replaceJob=out=>{const i=DATA.jobs.findIndex(j=>j.job_id===out.job_id);if(i>=0)DATA.jobs[i]=out};
+async function decodeNow(id,force=false){BUSY.add(id);delete ERRS[id];render();
+  try{replaceJob(await post('/api/decode',{job_id:id,force}))}
   catch(e){ERRS[id]=e.message}finally{BUSY.delete(id);render()}}
+async function rate(id,verdict){try{replaceJob(await post('/api/feedback',{job_id:id,verdict}));render()}catch(e){alert(e.message)}}
+const modelName=m=>{m=String(m||'').replace(/^claude-/,'').replace(/-(\d+)-(\d+)$/,' $1.$2').replace(/-(\d+)$/,' $1');return m?m[0].toUpperCase()+m.slice(1):'?'};
+// Accuracy of decodes you've marked right/wrong, per model: the evidence for keeping Haiku or moving to Sonnet.
+function accuracy(){const by={};DATA.jobs.forEach(j=>{const d=j.decode||{};if(d.feedback!=='right'&&d.feedback!=='wrong')return;
+  const m=modelName(d.model);(by[m]=by[m]||{r:0,n:0});by[m].n++;if(d.feedback==='right')by[m].r++});return by}
 const typeCls=t=>({'Direct hire':'t-direct','Temp / Contract':'t-temp','Contract-to-hire':'t-c2h'}[t]||'muted');
 const confRank={high:3,medium:2,low:1,none:0};
 const day=s=>s?s.slice(0,10):'';
@@ -332,8 +360,10 @@ const statHtml=items=>items.map(([v,l])=>`<div class=stat><b class="${String(v).
 function renderStats(rows){
   const n=t=>rows.filter(j=>j.employment_type===t).length, dec=rows.filter(j=>(j.decode||{}).client_guess&&(j.decode.client_guess!=='Unknown')).length;
   const lr=latestRun();
+  const acc=Object.entries(accuracy()).sort((a,b)=>b[1].n-a[1].n).slice(0,2)
+    .map(([m,a])=>[Math.round(100*a.r/a.n)+'%',`decodes right · ${m} (${a.r}/${a.n} checked)`]);
   $('#stats').innerHTML=statHtml([[rows.length,'postings shown'],[n('Direct hire'),'direct hire'],[n('Temp / Contract')+n('Contract-to-hire'),'temp / contract'],
-   [dec,'with a likely client'],[lr?new Date(lr).toLocaleString():'—','last run']])}
+   [dec,'with a likely client'],...(acc.length?acc:[['—','decode accuracy: mark decodes ✓ / ✗']]),[lr?new Date(lr).toLocaleString():'—','last run']])}
 const watchChips=j=>(j.watch||[]).map(n=>{const w=watchFor(n)||{};return `<span class="chip ${w.status==='client'?'w-client':'w-prospect'}">${w.status==='client'?'Client':'Prospect'}: ${esc(n)}</span>`}).join('');
 function clientCell(j){const d=j.decode;
   if(BUSY.has(j.job_id))return '<span class="muted small">Decoding… usually under a minute</span>';
@@ -343,9 +373,16 @@ function clientCell(j){const d=j.decode;
   const alts=(d.alternatives||[]).map(a=>`<li><b>${esc(a.name)}</b> — ${esc(a.why)}</li>`).join('');
   const ev=(d.evidence||[]).map(e=>`<li>${esc(e)}</li>`).join('');
   const src=(d.source_urls||[]).map(u=>`<li><a href="${esc(u)}" target=_blank rel=noopener>${esc(u.slice(0,70))}</a></li>`).join('');
+  const fb=d.feedback, prev=d.previous;
+  const rateHtml=`<div class="small rate">${esc(modelName(d.model))} &middot; Right?
+    <button class="fb ${fb==='right'?'on-right':''}" data-id="${esc(j.job_id)}" data-v="${fb==='right'?'':'right'}" title="Correct">✓</button><button
+    class="fb ${fb==='wrong'?'on-wrong':''}" data-id="${esc(j.job_id)}" data-v="${fb==='wrong'?'':'wrong'}" title="Wrong">✗</button>
+    &middot; <a href=# class=redecode data-id="${esc(j.job_id)}">Re-decode</a>
+    ${prev?`<div class=muted>Before: ${esc(prev.client_guess)} (${esc(prev.confidence)}, ${esc(modelName(prev.model))}${prev.feedback?', marked '+esc(prev.feedback):''})</div>`:''}
+    ${ERRS[j.job_id]?`<div class=err>${esc(ERRS[j.job_id])}</div>`:''}</div>`;
   return `<details><summary><b>${esc(d.client_guess)}</b> <span class="small conf-${esc(d.confidence)}">${esc(d.confidence)}</span></summary>
   <div class=small><span class=muted>${esc([d.client_type,d.therapeutic_area,d.modality,d.development_stage].filter(x=>x&&x!=='Unknown').join(' · '))}</span>
-  ${ev?`<ul>${ev}</ul>`:''}${alts?`<div class=muted>Alternatives</div><ul>${alts}</ul>`:''}${src?`<div class=muted>Sources</div><ul>${src}</ul>`:''}</div></details>`}
+  ${ev?`<ul>${ev}</ul>`:''}${alts?`<div class=muted>Alternatives</div><ul>${alts}</ul>`:''}${src?`<div class=muted>Sources</div><ul>${src}</ul>`:''}</div></details>${rateHtml}`}
 function sortRows(rows){const k=SORT.k,dir=SORT.d;const val=j=>k==='client'?((j.decode||{}).client_guess||''):k==='posted'?postedOn(j):(j[k]||'');
   return rows.sort((a,b)=>{const va=val(a),vb=val(b);return (va>vb?1:va<vb?-1:0)*dir})}
 function renderJobs(rows){
@@ -425,6 +462,9 @@ async function load(){const r=await fetch('/api/data');if(r.status===401){locati
   render()}
 document.addEventListener('click',async e=>{const t=e.target;
   const b=t.closest('button.decode:not(.add-prospect)');if(b)return decodeNow(b.dataset.id);
+  const fbb=t.closest('button.fb');if(fbb)return rate(fbb.dataset.id,fbb.dataset.v);
+  const rd=t.closest('a.redecode');if(rd){e.preventDefault();
+    if(confirm('Decode this posting again with the current model? This costs one more decode.'))decodeNow(rd.dataset.id,true);return}
   const add=t.closest('.add-prospect');if(add){add.disabled=true;add.textContent='Adding…';
     try{await saveWatch({name:add.dataset.name,status:'prospect'})}catch(err){alert(err.message)}return}
   const a=t.closest('a.a-edit,a.a-toggle,a.a-del');if(!a)return;e.preventDefault();

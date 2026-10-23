@@ -58,6 +58,7 @@ jobs:
               "EmailFrom=${{ vars.EMAIL_FROM }}" \
               "EmailTo=${{ vars.EMAIL_TO }}" \
               "DecodeLimit=${{ vars.DECODE_LIMIT || '25' }}" \
-              "DecodeWebSearches=${{ vars.DECODE_WEB_SEARCHES || '4' }}"
+              "DecodeWebSearches=${{ vars.DECODE_WEB_SEARCHES || '4' }}" \
+              "DecodeModel=${{ vars.DECODE_MODEL || 'claude-haiku-5-5' }}"
           aws cloudformation describe-stacks --stack-name jobwatch \
             --query "Stacks[0].Outputs[?OutputKey=='DashboardUrl'].OutputValue" --output text
